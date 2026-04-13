@@ -44,6 +44,8 @@ DragonsDreamDecomp/
 │   ├── tavern-flow.md                        # Tavern sit flow
 │   ├── game-flow.md                          # Post-login game flow
 │   └── ... (21 analysis files total)
+├── saves/
+│   └── GS-7114.zip                          # Pre-made Saturn save file
 └── skill/
     └── saturn-dragonsdream-developer/        # Claude Code skill
         ├── skill.md
@@ -63,9 +65,21 @@ The server binds to port 8020 by default. An admin GUI is available at launch fo
 
 ## Connecting from Saturn Hardware
 
-1. Set up a [DreamPi](https://github.com/Kazade/dreampi) with the `transparent` handler on your local network
-2. Configure `config.ini` with `handler = transparent` and `port = 8020`
-3. On the Saturn, enter `::host=<server_ip>` as the phone number to bypass modem dialing and connect via TCP directly
+Use the default [DreamPi](https://github.com/Kazade/dreampi) configuration and add the following entry to your `netlink_config.ini` file (on your Pi or PC tunnel), substituting the host/IP for your actual server address:
+
+```ini
+[server:199403]
+name = DRAGON
+host = 192.168.50.180
+port = 8020
+handler = transparent
+```
+
+The `transparent` handler provides raw TCP passthrough — no PPP or protocol translation. The Saturn's `::host=` direct TCP mode is also supported for development.
+
+### Pre-made Save File
+
+A ready-to-use Saturn backup RAM save is included in `saves/GS-7114.zip`. Load this onto your Saturn's internal memory or backup cartridge to skip initial character creation. This save contains a character that can connect to the revival server immediately.
 
 ## Claude Code Skill
 
