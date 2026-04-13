@@ -27,8 +27,10 @@ DragonsDreamDecomp/
 │   └── *.MFD, *.TXT                          # Metadata
 ├── server/
 │   ├── dragons_dream_server_v4/              # Revival server (22 Python modules)
-│   ├── run_server.bat                        # Launch script
-│   ├── config.ini                            # Server config
+│   ├── Dragon's Dream Server.bat             # Double-click to launch Admin GUI
+│   ├── run_server.bat                        # CLI launch with options (--gui, --port, etc.)
+│   ├── dd_admin_config.json                  # Admin GUI settings (host, port, db path)
+│   ├── config.ini                            # DreamPi netlink config
 │   ├── netlink.py                            # DreamPi netlink module
 │   ├── bridge.py                             # Network bridge
 │   └── dump_dispatch_table.py                # Binary analysis utility
@@ -54,14 +56,27 @@ DragonsDreamDecomp/
 
 ## Running the Server
 
-**Requirements:** Python 3.10+
+**Requirements:** Python 3.10+ (standard library only — no pip packages needed)
+
+### Easiest: Double-click the bat file
+
+Just double-click **`server/Dragon's Dream Server.bat`** — this launches the Admin GUI where you can start/stop the server, view connected players, and manage game state, all from a single window.
+
+### CLI launch
 
 ```bash
 cd server
 python -m dragons_dream_server_v4 --port 8020
 ```
 
-The server binds to port 8020 by default. An admin GUI is available at launch for managing game state.
+Or with the admin GUI via CLI:
+
+```bash
+cd server
+run_server.bat --gui
+```
+
+The server binds to `0.0.0.0:8020` by default. Settings are saved in `dd_admin_config.json`.
 
 ## Connecting from Saturn Hardware
 
