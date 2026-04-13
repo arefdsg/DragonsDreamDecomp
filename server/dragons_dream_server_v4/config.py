@@ -1,0 +1,214 @@
+"""
+Message type constants, paired table, and default game data tables.
+Verbatim from v3 protocol decompilation — DO NOT MODIFY message type values.
+"""
+import struct
+
+# ============================================================
+# Message Type Constants (from handler table at file 0x0435D8)
+# ============================================================
+
+# Server -> Client (what server sends, client handler processes)
+MSG_LOGOUT_REQUEST      = 0x0043
+MSG_REGIST_HANDLE_REQ   = 0x0046
+MSG_SPEAK_REQUEST       = 0x0049
+MSG_SPEAK_REPLY         = 0x004A
+MSG_SPEAK_NOTICE        = 0x0076
+MSG_ESP_REQUEST         = 0x006F
+MSG_ESP_REPLY           = 0x006E
+MSG_ESP_NOTICE          = 0x01E8
+MSG_INFORMATION_NOTICE  = 0x019D
+MSG_UPDATE_CHARDATA_REQ = 0x019F
+MSG_CHARDATA_NOTICE     = 0x01AB
+MSG_CHARDATA_REQUEST    = 0x02F9
+MSG_CHARDATA_REPLY      = 0x02D2
+MSG_CURREGION_NOTICE    = 0x01B9
+MSG_PARTYID_REQUEST     = 0x01ED
+MSG_CLR_KNOWNMAP_REQ    = 0x01EF
+MSG_PARTYEXIT_REQUEST   = 0x01A8
+MSG_GOTOLIST_REQUEST    = 0x019B
+MSG_PARTYLIST_REQUEST   = 0x01A3
+MSG_USERLIST_REQUEST    = 0x01A1
+MSG_CAMP_IN_REQUEST     = 0x01AD
+MSG_CAMP_OUT_REQUEST    = 0x01B4
+MSG_MOVE1_REQUEST       = 0x01C4
+MSG_MOVE2_REQUEST       = 0x01C5
+MSG_MOVE2_NOTICE        = 0x02F3
+MSG_SET_MOVEMODE_REQ    = 0x01E0
+MSG_GIVEUP_REQUEST      = 0x02F8
+MSG_SETPOS_REQUEST      = 0x01D4
+MSG_TELEPORTLIST_REQ    = 0x01B0
+MSG_AREA_LIST_REQUEST   = 0x023C
+MSG_EXPLAIN_REQUEST     = 0x023F
+MSG_EQUIP_REQUEST       = 0x0205
+MSG_DISARM_REQUEST      = 0x026D
+MSG_MAP_NOTICE          = 0x01DE
+MSG_KNOWNMAP_NOTICE     = 0x01D2
+MSG_ENCOUNTMONSTER_REQ  = 0x0244
+MSG_ENCOUNTMONSTER_RPL  = 0x01C9
+MSG_ENCOUNTMONSTER_NTC  = 0x01CA  # 0B payload, clears g_state[0xF4B9] (handler 0x7BEC)
+MSG_BATTLEMODE_NOTICE   = 0x021F
+MSG_BTL_CMD_REQUEST     = 0x0222
+MSG_BTL_CMD_REPLY       = 0x0223
+MSG_BTL_CHGMODE_REQ     = 0x0225
+MSG_BTL_RESULT_NOTICE   = 0x0227
+MSG_BTL_EFFECTEND_REQ   = 0x0297
+MSG_BTL_END_REQUEST     = 0x01EB
+MSG_BTL_GOLD_NOTICE     = 0x01C8  # 12B hdr + groups (handler 0x83E4)
+MSG_BTL_END_REPLY       = 0x02F4  # 16B position restore (handler 0x836E)
+MSG_CANCEL_ENCOUNT_REQ  = 0x01E4
+MSG_SHOP_LIST_REQUEST   = 0x0203
+MSG_SHOP_IN_REQUEST     = 0x01FF
+MSG_SHOP_ITEM_REQUEST   = 0x01FD
+MSG_SHOP_BUY_REQUEST    = 0x01F3
+MSG_SHOP_SELL_REQUEST   = 0x01F5
+MSG_SHOP_OUT_REQUEST    = 0x0201
+MSG_STORE_LIST_REQUEST  = 0x0270
+MSG_STORE_IN_REQUEST    = 0x0272
+MSG_SAKAYA_LIST_REQUEST = 0x020D
+MSG_SAKAYA_TBLLIST_REQ  = 0x01F9
+MSG_SAKAYA_IN_REQUEST   = 0x0217
+MSG_SAKAYA_EXIT_REQUEST = 0x01FB
+MSG_SAKAYA_SIT_REQUEST  = 0x020F  # Server→client: paired ack for 0x020E. Handler at 0x050D0: reads [2B status][2B unused]. If status==0: strcpy(ctx+0x74EC, ctx+0x7515). Always clears ctx+0x7515.
+MSG_SAKAYA_MEMLIST_REQ  = 0x024C  # Server→client: paired reply for 0x024B. Handler at 0x05112: delta member update (NO clear), checks status, process_member_entries. Format: [2B status][2B count][4B context][N×36B entries]
+MSG_SAKAYA_MEMLIST_PUSH = 0x024D  # Server→client: server push (NOT paired). Handler at 0x05152: FULL member refresh — clears ALL 8 slots (172B each), ALWAYS processes entries regardless of status. Format: [2B status][2B count][4B context][N×36B entries]
+MSG_SAKAYA_FIND_RESULT  = 0x024F  # Server→client: paired reply for 0x024E. Handler at 0x05290: simple find result — reads [2B status][2B count_discarded][4B find_result→ctx+0x9C]. NO member processing!
+MSG_SAKAYA_SELF_DATA    = 0x0247  # Server→client: server push. Handler at 0x0533C: memmove(ctx+0x74EC, payload+16, 40). Clears ctx+0x7514.
+MSG_SAKAYA_STAND_REQ    = 0x021A
+MSG_SET_SIGN_REQUEST    = 0x0246
+MSG_MOVE_SEAT_REQUEST   = 0x0255
+MSG_SET_SEKIBAN_REQUEST = 0x0251
+MSG_DIR_REQUEST         = 0x029E
+MSG_SUBDIR_REQUEST      = 0x02A0
+MSG_MEMODIR_REQUEST     = 0x02A2
+MSG_NEWS_READ_REQUEST   = 0x02A4
+MSG_NEWS_WRITE_REQUEST  = 0x02A6
+MSG_NEWS_DEL_REQUEST    = 0x02A8
+MSG_BB_MKDIR_REQUEST    = 0x02B2
+MSG_BB_RMDIR_REQUEST    = 0x02B4
+MSG_BB_MKSUBDIR_REQUEST = 0x02B6
+MSG_BB_RMSUBDIR_REQUEST = 0x02B8
+MSG_PARTYENTRY_REQUEST  = 0x022B
+MSG_ALLOW_JOIN_REQUEST  = 0x01E7
+MSG_CANCEL_JOIN_REQUEST = 0x025C
+MSG_PARTYUNITE_REQUEST  = 0x022F
+MSG_ALLOW_UNITE_REQUEST = 0x0231
+MSG_FINDUSER_REQUEST    = 0x01B8
+MSG_FINDUSER2_REQUEST   = 0x0241
+MSG_MIRRORDUNGEON_REQ   = 0x0234
+MSG_CLASS_LIST_REQUEST  = 0x0299
+MSG_CLASS_CHANGE_REQ    = 0x029B
+MSG_EXEC_EVENT_REQUEST  = 0x01D0
+MSG_EXEC_EVENT_NOTICE   = 0x02EF  # Server→client event queue notice (4B payload)
+MSG_GIVE_ITEM_REQUEST   = 0x0294
+MSG_USE_REQUEST         = 0x02D1
+MSG_SELL_REQUEST        = 0x028D
+MSG_BUY_REQUEST         = 0x028F
+MSG_TRADE_CANCEL_REQ    = 0x0291
+MSG_COMPOUND_REQUEST    = 0x02EE
+MSG_CONFIRM_LVLUP_REQ   = 0x0276
+MSG_LEVELUP_REQUEST     = 0x0278
+MSG_SKILL_LIST_REQUEST  = 0x02BA
+MSG_LEARN_SKILL_REQUEST = 0x02E1
+MSG_SKILLUP_REQUEST     = 0x02E3
+MSG_EQUIP_SKILL_REQUEST = 0x02E5
+MSG_DISARM_SKILL_REQ    = 0x02E7
+MSG_USE_SKILL_REQUEST   = 0x02E9
+MSG_CHANGE_PARA_REQUEST = 0x02F6
+MSG_SEL_THEME_REQUEST   = 0x0269
+MSG_CHECK_THEME_REQUEST = 0x026B
+MSG_MAIL_LIST_REQUEST   = 0x02AA
+MSG_GET_MAIL_REQUEST    = 0x02AC
+MSG_SEND_MAIL_REQUEST   = 0x02AE
+MSG_DEL_MAIL_REQUEST    = 0x02B0
+MSG_COLO_WAITING_REQ    = 0x02BC
+MSG_COLO_EXIT_REQUEST   = 0x02BF
+MSG_COLO_LIST_REQUEST   = 0x02C2
+MSG_COLO_ENTRY_REQUEST  = 0x02C4
+MSG_COLO_CANCEL_REQUEST = 0x02C6
+MSG_COLO_FLDENT_REQUEST = 0x02C9
+MSG_COLO_RANKING_REQ    = 0x02CE
+MSG_CAST_DICE_REQUEST   = 0x02D5
+MSG_CARD_REQUEST        = 0x02DC
+MSG_ACTION_CHAT_REQUEST = 0x0260
+
+# Client -> Server message types (what client sends)
+MSG_INIT_C2S             = 0x0035
+MSG_LOGIN_REQUEST_C2S    = 0x019E
+MSG_UPDATE_CHARDATA_RPL  = 0x01AA
+MSG_CHARDATA2_NOTICE_C2S = 0x0B6C
+MSG_STANDARD_REPLY_C2S   = 0x0048
+MSG_MOVE_C2S             = 0x01C1
+MSG_MOVE2_C2S            = 0x01C2
+MSG_LOGOUT_NOTICE_C2S    = 0x019A
+MSG_GOTOLIST_NOTICE_C2S  = 0x019C
+MSG_MAP_CHANGE_NOTICE_C2S = 0x01AC
+
+# ============================================================
+# Paired Message Table (108 entries from file 0x043424)
+# Client sends -> Server replies
+# ============================================================
+PAIRED_TABLE = {
+    0x0035: 0x01E8, 0x019E: 0x019F, 0x01AA: 0x02F9, 0x0B6C: 0x02F9,
+    0x0048: 0x0049, 0x006D: 0x006F, 0x01EC: 0x01ED, 0x01EE: 0x01EF,
+    0x01A7: 0x01A8, 0x025F: 0x0260, 0x02D4: 0x02D5, 0x02DB: 0x02DC,
+    0x019A: 0x019B, 0x019C: 0x019D, 0x01B7: 0x01B8, 0x026F: 0x0270,
+    0x0271: 0x0272, 0x020C: 0x020D, 0x0210: 0x0211, 0x0216: 0x0217,
+    0x01A0: 0x01A1, 0x01F8: 0x01F9, 0x02FA: 0x01F9, 0x01FA: 0x01FB,
+    0x020E: 0x020F, 0x024B: 0x024C, 0x024E: 0x024F, 0x0219: 0x021A,
+    0x0245: 0x0246, 0x0254: 0x0255, 0x0250: 0x0251, 0x0202: 0x0203,
+    0x01FE: 0x01FF, 0x01FC: 0x01FD, 0x01F2: 0x01F3, 0x01F4: 0x01F5,
+    0x0200: 0x0201, 0x029D: 0x029E, 0x029F: 0x02A0, 0x02A1: 0x02A2,
+    0x02A3: 0x02A4, 0x02A5: 0x02A6, 0x02A7: 0x02A8, 0x02B1: 0x02B2,
+    0x02B3: 0x02B4, 0x02B5: 0x02B6, 0x02B7: 0x02B8, 0x01A2: 0x01A3,
+    0x01A4: 0x022B, 0x01E6: 0x01E7, 0x025B: 0x025C, 0x022C: 0x022F,
+    0x0230: 0x0231, 0x023B: 0x023C, 0x01AF: 0x01B0, 0x023E: 0x023F,
+    0x04E0: 0x0046, 0x0233: 0x0234, 0x0240: 0x0241, 0x0298: 0x0299,
+    0x029A: 0x029B, 0x01C1: 0x01C4, 0x01C2: 0x01C4, 0x01AC: 0x01AD,
+    0x01DF: 0x01E0, 0x02F7: 0x02F8, 0x01D3: 0x01D4, 0x01D6: 0x02D8,
+    0x02D9: 0x02DA, 0x01B3: 0x01B4, 0x0204: 0x0205, 0x026C: 0x026D,
+    0x02E8: 0x02E9, 0x02F5: 0x02F6, 0x0243: 0x0244, 0x0221: 0x0222,
+    0x0224: 0x0225, 0x0296: 0x0297, 0x01EA: 0x01EB, 0x01E3: 0x01E4,
+    0x0235: 0x0236, 0x01CF: 0x01D0, 0x0293: 0x0294, 0x02D0: 0x02D1,
+    0x0289: 0x028D, 0x028E: 0x028F, 0x0290: 0x0291, 0x02ED: 0x02EE,
+    0x0275: 0x0276, 0x0277: 0x0278, 0x02B9: 0x02BA, 0x02E0: 0x02E1,
+    0x02E2: 0x02E3, 0x02E4: 0x02E5, 0x02E6: 0x02E7, 0x0268: 0x0269,
+    0x026A: 0x026B, 0x02A9: 0x02AA, 0x02AB: 0x02AC, 0x02AD: 0x02AE,
+    0x02AF: 0x02B0, 0x02BB: 0x02BC, 0x02BE: 0x02BF, 0x02C1: 0x02C2,
+    0x02C3: 0x02C4, 0x02C5: 0x02C6, 0x02C8: 0x02C9, 0x02CD: 0x02CE,
+}
+
+# ============================================================
+# Default Character Stats by Class
+# AI-RECONSTRUCTED: Base stats inferred from 19-stat U16 layout
+# and typical RPG class archetypes. Stats: HP,MP,STR,VIT,INT,MND,AGI,DEX,LUK,CHA,+9
+# ============================================================
+CLASS_NAMES = ["Warrior", "Mage", "Priest", "Thief", "Ranger", "Bard"]
+
+# [HP, MP, STR, VIT, INT, MND, AGI, DEX, LUK, CHA, s10..s18]
+DEFAULT_BASE_STATS = {
+    0: [120, 30, 18, 16, 8, 10, 12, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10],  # Warrior
+    1: [70, 100, 8, 8, 18, 16, 10, 10, 10, 12, 10, 10, 10, 10, 10, 10, 10, 10, 10],    # Mage
+    2: [90, 80, 10, 12, 14, 18, 10, 10, 12, 14, 10, 10, 10, 10, 10, 10, 10, 10, 10],   # Priest
+    3: [80, 40, 12, 10, 10, 10, 18, 16, 14, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10],   # Thief
+    4: [100, 50, 14, 14, 12, 12, 14, 14, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10],  # Ranger
+    5: [80, 60, 10, 10, 12, 14, 12, 12, 12, 18, 10, 10, 10, 10, 10, 10, 10, 10, 10],   # Bard
+}
+
+# AI-RECONSTRUCTED: Stat growth per level by class [HP,MP,STR,VIT,INT,MND,AGI,DEX,LUK,CHA,+9]
+STAT_GROWTH = {
+    0: [12, 3, 3, 3, 1, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    1: [5, 10, 1, 1, 3, 3, 1, 1, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    2: [8, 8, 1, 2, 2, 3, 1, 1, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    3: [7, 4, 2, 1, 1, 1, 3, 3, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    4: [10, 5, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    5: [7, 6, 1, 1, 2, 2, 2, 2, 2, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+}
+
+# AI-RECONSTRUCTED: EXP thresholds = level^2 * 100
+EXP_THRESHOLDS = [level * level * 100 for level in range(17)]  # index 0 unused
+
+# Max level
+MAX_LEVEL = 16
+MAX_INVENTORY_SLOTS = 100
+MAX_SKILL_SLOTS = 8
