@@ -48,6 +48,7 @@ def load_config():
         "host": "0.0.0.0",
         "port": DEFAULT_PORT,
         "db_path": DEFAULT_DB,
+        "client_mode": "auto",
         "auto_start": False,
     }
     if os.path.exists(CONFIG_FILE):
@@ -154,6 +155,16 @@ class AdminGUI:
         ttk.Label(row, text="Port:").pack(side=tk.LEFT)
         self.port_var = tk.IntVar(value=self.config.get("port", DEFAULT_PORT))
         ttk.Entry(row, textvariable=self.port_var, width=8).pack(side=tk.LEFT, padx=5)
+        ttk.Label(row, text="Client mode:").pack(side=tk.LEFT, padx=(15, 0))
+        self.client_mode_var = tk.StringVar(value=self.config.get("client_mode", "auto"))
+        client_mode = ttk.Combobox(
+            row,
+            textvariable=self.client_mode_var,
+            values=("auto", "saturn", "windows"),
+            width=10,
+            state="readonly",
+        )
+        client_mode.pack(side=tk.LEFT, padx=5)
 
         row2 = ttk.Frame(settings_frame)
         row2.pack(fill=tk.X, padx=5, pady=2)
@@ -441,11 +452,13 @@ class AdminGUI:
         host = self.host_var.get()
         port = self.port_var.get()
         db_path = self.db_var.get()
+        client_mode = self.client_mode_var.get()
 
         self._save_settings()
 
         cmd = [sys.executable, "-m", "dragons_dream_server_v4",
-               "--host", host, "--port", str(port), "--db", db_path]
+               "--host", host, "--port", str(port), "--db", db_path,
+               "--client-mode", client_mode]
 
         try:
             self.server_process = subprocess.Popen(
@@ -455,9 +468,9 @@ class AdminGUI:
             self.server_running = True
             self.start_btn.config(state=tk.DISABLED)
             self.stop_btn.config(state=tk.NORMAL)
-            self.status_var.set(f"Server: RUNNING on {host}:{port}")
-            self.log_admin(f"Server started: {host}:{port} DB={db_path}")
-            admin_log.info("Server started: %s:%d DB=%s", host, port, db_path)
+            self.status_var.set(f"Server: RUNNING on {host}:{port} ({client_mode})")
+            self.log_admin(f"Server started: {host}:{port} mode={client_mode} DB={db_path}")
+            admin_log.info("Server started: %s:%d mode=%s DB=%s", host, port, client_mode, db_path)
 
             # Start log tail thread
             self.log_tail_thread = threading.Thread(target=self._tail_server_output, daemon=True)
@@ -1205,6 +1218,7 @@ class AdminGUI:
         self.config["host"] = self.host_var.get()
         self.config["port"] = self.port_var.get()
         self.config["db_path"] = self.db_var.get()
+        self.config["client_mode"] = self.client_mode_var.get()
         save_config(self.config)
         self.log_admin("Settings saved")
 

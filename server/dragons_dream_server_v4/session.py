@@ -20,12 +20,15 @@ class DDSession:
     _next_id = 0
 
     def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
-                 db: Database):
+                 db: Database, client_mode: str = "auto"):
         DDSession._next_id += 1
         self.sid = DDSession._next_id
         self.reader = reader
         self.writer = writer
         self.db = db
+        self.client_mode = client_mode
+        self.client_profile = "unknown"
+        self._pending_rx = bytearray()
         self.running = True
         self.keepalive_task = None
         self.login_phase = 0
@@ -215,14 +218,14 @@ class DDSession:
     async def recv_iv(self) -> bytes:
         """Receive one complete IV frame. Handles keepalives transparently."""
         while True:
-            b = await self.reader.read(1)
+            b = await self._read_byte()
             if not b:
                 raise ConnectionError("Connection closed")
 
             if b == b'$':
                 buf = b''
                 while True:
-                    c = await self.reader.read(1)
+                    c = await self._read_byte()
                     if not c:
                         raise ConnectionError("Connection closed in keepalive")
                     buf += c
@@ -232,7 +235,7 @@ class DDSession:
                 continue
 
             if b == b'I':
-                b2 = await self.reader.read(1)
+                b2 = await self._read_byte()
                 if not b2:
                     raise ConnectionError("Connection closed")
                 if b2 == b'V':
@@ -267,11 +270,24 @@ class DDSession:
         """Read exactly n bytes."""
         buf = b''
         while len(buf) < n:
+            if self._pending_rx:
+                take = min(n - len(buf), len(self._pending_rx))
+                buf += bytes(self._pending_rx[:take])
+                del self._pending_rx[:take]
+                continue
             chunk = await self.reader.read(n - len(buf))
             if not chunk:
                 raise ConnectionError("Connection closed during read")
             buf += chunk
         return buf
+
+    async def _read_byte(self) -> bytes:
+        """Read one byte, honoring bytes consumed during transport auto-detect."""
+        if self._pending_rx:
+            b = bytes(self._pending_rx[:1])
+            del self._pending_rx[:1]
+            return b
+        return await self.reader.read(1)
 
     # ----------------------------------------------------------
     # Session Protocol (verbatim from v3)
@@ -400,7 +416,7 @@ class DDSession:
     # ----------------------------------------------------------
     # BBS handshake (verbatim from v3)
     # ----------------------------------------------------------
-    async def bbs_handshake(self) -> bool:
+    async def bbs_handshake(self, first_byte: bytes = b'') -> bool:
         """Handle BBS command phase."""
         try:
             got_p = False
@@ -408,7 +424,8 @@ class DDSession:
             got_hrpg = False
 
             while not got_hrpg:
-                line = await asyncio.wait_for(self._read_bbs_line(), timeout=30.0)
+                line = await asyncio.wait_for(self._read_bbs_line(first_byte), timeout=30.0)
+                first_byte = b''
                 text = line.strip()
                 log.info("[S%d] BBS: %r", self.sid, text)
 
@@ -417,13 +434,24 @@ class DDSession:
                         self.writer.write(b'*\r\n')
                         await self.writer.drain()
                         got_p = True
-                    continue
+                        continue
+                    if text.startswith(b'SET'):
+                        got_p = True
+                    elif text.startswith(b'C '):
+                        got_p = True
+                        got_set = True
+                    else:
+                        continue
                 if not got_set:
                     if text.startswith(b'SET'):
                         self.writer.write(b'*\r\n')
                         await self.writer.drain()
                         got_set = True
-                    continue
+                        continue
+                    if text.startswith(b'C '):
+                        got_set = True
+                    else:
+                        continue
                 if text.startswith(b'C '):
                     self.writer.write(b'COM\r\n')
                     await self.writer.drain()
@@ -434,16 +462,55 @@ class DDSession:
             log.warning("[S%d] BBS handshake timeout", self.sid)
             return False
 
-    async def _read_bbs_line(self) -> bytes:
+    async def _read_bbs_line(self, initial: bytes = b'') -> bytes:
         """Read bytes until \\r."""
-        buf = b''
+        buf = bytearray(initial)
+        if b'\r' in buf:
+            idx = buf.index(b'\r') + 1
+            extra = bytes(buf[idx:])
+            if extra:
+                self._pending_rx[:0] = extra
+            return bytes(buf[:idx])
         while True:
-            b = await self.reader.read(1)
+            b = await self._read_byte()
             if not b:
                 raise ConnectionError("Closed during BBS")
             buf += b
             if b == b'\r':
-                return buf
+                return bytes(buf)
+
+    async def _prepare_transport(self) -> bool:
+        """Select the startup transport used by Saturn and Windows clients."""
+        mode = (self.client_mode or "auto").lower()
+        if mode == "windows":
+            self.client_profile = "windows-direct"
+            log.info("[S%d] Client mode windows: skipping BBS handshake", self.sid)
+            return True
+        if mode == "saturn":
+            self.client_profile = "saturn-bbs"
+            return await self.bbs_handshake()
+
+        try:
+            first = await asyncio.wait_for(self.reader.read(1), timeout=1.5)
+        except asyncio.TimeoutError:
+            self.client_profile = "windows-direct"
+            log.info("[S%d] Auto-detected quiet client: Windows direct TCP", self.sid)
+            return True
+
+        if not first:
+            raise ConnectionError("Connection closed during transport detection")
+
+        if first in (b'I', b'$', b'\x00', b'\xA6'):
+            self._pending_rx.extend(first)
+            self.client_profile = "windows-direct"
+            log.info("[S%d] Auto-detected direct framed client (first=0x%02X)",
+                     self.sid, first[0])
+            return True
+
+        self.client_profile = "bbs"
+        log.info("[S%d] Auto-detected BBS command client (first=0x%02X)",
+                 self.sid, first[0])
+        return await self.bbs_handshake(first)
 
     # ----------------------------------------------------------
     # Keepalive (verbatim from v3)
@@ -485,9 +552,9 @@ class DDSession:
         log.info("[S%d] Connected from %s", self.sid, addr)
 
         try:
-            if not await self.bbs_handshake():
+            if not await self._prepare_transport():
                 return
-            log.info("[S%d] BBS complete, starting session", self.sid)
+            log.info("[S%d] Transport ready (%s), starting session", self.sid, self.client_profile)
 
             await asyncio.sleep(0.5)
             await self._send_session_establishment()

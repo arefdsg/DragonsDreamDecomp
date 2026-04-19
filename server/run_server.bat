@@ -20,6 +20,7 @@ set HOST=0.0.0.0
 set PORT=8020
 set DB=dd_world.db
 set LOG=server.log
+set CLIENT_MODE=windows
 
 REM Parse command-line arguments
 :parse_args
@@ -28,6 +29,7 @@ if /i "%~1"=="--host" (set HOST=%~2& shift & shift & goto parse_args)
 if /i "%~1"=="--port" (set PORT=%~2& shift & shift & goto parse_args)
 if /i "%~1"=="--db" (set DB=%~2& shift & shift & goto parse_args)
 if /i "%~1"=="--log" (set LOG=%~2& shift & shift & goto parse_args)
+if /i "%~1"=="--client-mode" (set CLIENT_MODE=%~2& shift & shift & goto parse_args)
 if /i "%~1"=="--gui" (goto run_gui)
 if /i "%~1"=="--help" (goto show_help)
 shift
@@ -41,6 +43,7 @@ echo   --host ADDR    Bind address (default: 0.0.0.0)
 echo   --port PORT    Bind port (default: 8020)
 echo   --db FILE      SQLite database file (default: dd_world.db)
 echo   --log FILE     Log file path (default: server.log)
+echo   --client-mode MODE  auto, saturn, or windows (default: auto)
 echo   --gui          Launch the admin GUI instead of CLI server
 echo   --help         Show this help
 echo.
@@ -64,12 +67,13 @@ echo   Host: %HOST%
 echo   Port: %PORT%
 echo   Database: %DB%
 echo   Log: %LOG%
+echo   Client mode: %CLIENT_MODE%
 echo.
 echo Starting server... (Press Ctrl+C to stop)
 echo.
 
 cd /d "%~dp0"
-python -m dragons_dream_server_v4 --host %HOST% --port %PORT% --db %DB% 2>&1 | tee %LOG%
+python -m dragons_dream_server_v4 --host %HOST% --port %PORT% --db %DB% --client-mode %CLIENT_MODE%
 
 if errorlevel 1 (
     echo.

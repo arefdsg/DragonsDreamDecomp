@@ -8,6 +8,7 @@ This project restores online functionality through complete protocol-level rever
 
 | Component | Status |
 |-----------|--------|
+| Windows 95 client startup | **SUPPORTED** - auto-detects Saturn/BBS vs Win95 direct TCP |
 | Protocol stack (5 layers) | **COMPLETE** — fully decompiled from binary |
 | 197 server→client handlers | **COMPLETE** — 173 substantive + 24 empty |
 | 104 client→server messages | **COMPLETE** — all payload layouts documented |
@@ -59,7 +60,13 @@ Double-click **`server/Dragon's Dream Server.bat`** to launch the Admin GUI. Fro
 
 The server binds to `0.0.0.0:8020` by default. Settings are saved in `dd_admin_config.json`.
 
-For CLI usage: `cd server && python -m dragons_dream_server_v4 --port 8020`
+For CLI usage: `cd server && python -m dragons_dream_server_v4 --port 8020 --client-mode auto`
+
+Client mode controls the startup transport:
+
+- `auto` - accept Saturn/NetLink BBS setup or Windows 95 direct TCP on the same port.
+- `saturn` - require the Saturn/NIFTY-style `P` / `SET` / `C NETRPG` command phase before IV framing.
+- `windows` - skip the BBS command phase and send the IV session establishment immediately for the Windows 95 Internet client.
 
 ## Connecting from Saturn Hardware
 
@@ -74,6 +81,17 @@ handler = transparent
 ```
 
 The `transparent` handler provides raw TCP passthrough — no PPP or protocol translation. The Saturn's `::host=` direct TCP mode is also supported for development.
+
+## Connecting from Windows 95
+
+The Windows 95 Internet client can connect to the same revival server on TCP port `8020`. Start the server in `auto` mode, or choose `windows` mode in the Admin GUI if this port will be dedicated to the Win95 client:
+
+```bat
+cd server
+python -m dragons_dream_server_v4 --host 0.0.0.0 --port 8020 --client-mode auto
+```
+
+The Win95 executable contains the original `IPADR` and `8020` settings. Point the client environment/settings dialog at your server IP address and use port `8020`. If you are testing a NIFTY-style Windows install that sends `C HRPG` / `C NETRPG`, leave the server on `auto`; the command prelude is accepted before the normal IV session starts.
 
 ### Pre-made Save File
 
