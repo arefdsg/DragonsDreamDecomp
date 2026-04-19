@@ -7,3 +7,5 @@ __pycache__/
 *.log
 .claude/
 logs/
+dragon_win/
+ghidra_12.0.4_PUBLIC/
