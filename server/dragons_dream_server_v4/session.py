@@ -29,6 +29,7 @@ class DDSession:
         self.client_mode = client_mode
         self.client_profile = "unknown"
         self._pending_rx = bytearray()
+        self._windows_bootstrap_sent = False
         self.running = True
         self.keepalive_task = None
         self.login_phase = 0
@@ -399,6 +400,8 @@ class DDSession:
                     if msg_type is not None:
                         log.info("[S%d] << SCMD 0x%04X (%d bytes)", self.sid, msg_type, len(payload))
                         await self._dispatch(msg_type, payload, param1)
+                elif self.client_profile == "windows-direct":
+                    await self._maybe_bootstrap_windows_direct(flags, raw)
             elif raw[0] == 0x00:
                 log.info("[S%d] Recv 0x00 #%d (%d bytes)", self.sid, msg_num, len(raw))
                 if len(raw) >= 20 and (raw[1] & 0x02):
@@ -412,6 +415,18 @@ class DDSession:
                 msg_type, payload, param1 = parse_game_msg(raw)
                 if msg_type is not None:
                     await self._dispatch(msg_type, payload, param1)
+
+    async def _maybe_bootstrap_windows_direct(self, flags: int, raw: bytes):
+        """Kick Win95 direct TCP clients that ACK the session but never send INIT."""
+        if self._windows_bootstrap_sent:
+            return
+        self._windows_bootstrap_sent = True
+        log.info("[S%d] Windows direct bootstrap after empty A6 status (flags=0x%02X)",
+                 self.sid, flags)
+        log.debug("[S%d] Empty A6 frame:\n%s",
+                  self.sid, full_hexdump(raw, "Windows empty A6"))
+        from .handlers_login import bootstrap_initial_login
+        await bootstrap_initial_login(self, self.char_name, 0, source="Windows direct")
 
     # ----------------------------------------------------------
     # BBS handshake (verbatim from v3)

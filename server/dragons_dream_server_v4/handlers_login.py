@@ -81,6 +81,57 @@ async def h_init(session, msg_type, payload, param1):
     session.login_phase = 1
 
 
+async def bootstrap_initial_login(session, name_bytes: bytes = b'', reconnect_flag: int = 0,
+                                  source: str = "bootstrap"):
+    """Send the initial ESP/update pair for clients that do not send INIT."""
+    if not name_bytes or not name_bytes.rstrip(b'\x00'):
+        name_bytes = session.char_name[:16] or sjis_pad("Player", 16)
+
+    try:
+        name_str = name_bytes.rstrip(b'\x00').decode('shift_jis', errors='replace')
+    except Exception:
+        name_str = name_bytes.hex()
+    log.info("[S%d] %s: bootstrapping initial login for name=%r",
+             session.sid, source, name_str)
+
+    db = session.db
+    char = db.load_character_by_name(name_bytes)
+    if char is None:
+        char_id = db.create_character(name_bytes)
+        char = db.load_character(char_id)
+    char.reconnect_flag = reconnect_flag
+
+    if char.zone_id != 4:
+        log.info("[S%d] %s: zone_id=%d -> forcing to 4 (dest_index always 4)",
+                 session.sid, source, char.zone_id)
+        char.zone_id = 4
+        char.map_id = 4
+        db.save_character(char)
+
+    session.char = char
+    session.char_name = char.char_name
+    session._gotolist_count = 0
+    session._in_game_world = False
+
+    esp = bytearray(51)
+    struct.pack_into('>H', esp, 0, 0)
+    struct.pack_into('>H', esp, 2, session.session_param)
+    struct.pack_into('>H', esp, 4, session.connection_id)
+    esp[6] = 6
+    esp[7] = 0
+    struct.pack_into('>I', esp, 8, 1)
+    esp[12:28] = sjis_pad("DD Revival", 16)
+    await session.send_msg(MSG_ESP_NOTICE, bytes(esp))
+
+    resp = bytearray(24)
+    struct.pack_into('>H', resp, 0, 0)
+    struct.pack_into('>H', resp, 2, 1)
+    struct.pack_into('>I', resp, 4, char.char_id)
+    resp[8:24] = char.char_name[:16]
+    await session.send_msg(MSG_UPDATE_CHARDATA_REQ, bytes(resp))
+    session.login_phase = 1
+
+
 async def h_login_request(session, msg_type, payload, param1):
     """
     0x019E -> UPDATE_CHARDATA_REQUEST (0x019F): 24 bytes
