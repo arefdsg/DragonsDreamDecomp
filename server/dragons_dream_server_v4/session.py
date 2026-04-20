@@ -305,15 +305,40 @@ class DDSession:
 
     def _build_session_data_frame(self, scmd_data: bytes) -> bytes:
         """Build 0x00-type session DATA frame wrapping SCMD data."""
+        if self.client_profile == "windows-direct":
+            return self._build_windows_session_data_frame(scmd_data)
+
         frame = bytearray(20 + len(scmd_data))
         frame[0] = 0x00
-        frame[1] = 0x03 | self._session_alt_flag()
+        frame[1] = 0x03
         struct.pack_into('>I', frame, 8, self.send_seq)
         struct.pack_into('>I', frame, 12, self.client_ack)
         struct.pack_into('>H', frame, 16, len(scmd_data))
         frame[20:20 + len(scmd_data)] = scmd_data
         checksum = self._session_checksum(frame)
         struct.pack_into('>H', frame, 2, checksum)
+        self.send_seq += len(scmd_data)
+        return bytes(frame)
+
+    def _store_session_checksum(self, frame: bytearray):
+        """Store the checksum using the active client's inner-session byte order."""
+        checksum = self._session_checksum(frame)
+        if self.client_profile == "windows-direct":
+            struct.pack_into('<H', frame, 2, checksum)
+        else:
+            struct.pack_into('>H', frame, 2, checksum)
+        return checksum
+
+    def _build_windows_session_data_frame(self, scmd_data: bytes) -> bytes:
+        """Build Win95 little-endian 0x00 DATA frame wrapping SCMD data."""
+        frame = bytearray(20 + len(scmd_data))
+        frame[0] = 0x00
+        frame[1] = 0x03
+        struct.pack_into('<I', frame, 8, self.send_seq)
+        struct.pack_into('<I', frame, 12, self.client_ack)
+        struct.pack_into('<H', frame, 16, len(scmd_data))
+        frame[20:20 + len(scmd_data)] = scmd_data
+        self._store_session_checksum(frame)
         self.send_seq += len(scmd_data)
         return bytes(frame)
 
@@ -349,7 +374,7 @@ class DDSession:
         while pos < len(raw):
             scmd.append(read_escaped())
 
-        self.client_ack = max(self.client_ack, seq + len(scmd) + 1)
+        self.client_ack = max(self.client_ack, seq + len(scmd))
         log.info("[S%d] 0xA6 data: seq=%d, val2=0x%08X, ack=%d",
                  self.sid, seq, val2, self.client_ack)
 
@@ -371,10 +396,14 @@ class DDSession:
         """
         payload = bytearray(256)
         payload[0] = 0x00
-        payload[1] = self._session_alt_flag()
-        struct.pack_into('>H', payload, 8, 0x0008)
-        checksum = self._session_checksum(payload)
-        struct.pack_into('>H', payload, 2, checksum)
+        if self.client_profile == "windows-direct":
+            # Win95's x86 parser reads the unescaped 0x00 establishment fields
+            # as little-endian: +8 is the option bitfield, where bit 0x0008
+            # transitions the reliable-session state to established.
+            struct.pack_into('<H', payload, 8, 0x0008)
+        else:
+            struct.pack_into('>H', payload, 8, 0x0008)
+        checksum = self._store_session_checksum(payload)
         await self.send_iv(bytes(payload))
         log.info("[S%d] Sent session establishment (256B, cksum=0x%04X, send_seq preserved=%d, client_seq preserved=%d)",
                  self.sid, checksum, self.send_seq, self.client_seq)
@@ -406,7 +435,6 @@ class DDSession:
                         await self._dispatch(msg_type, payload, param1)
                 elif self.client_profile == "windows-direct":
                     self._learn_windows_status_ack(raw)
-                    await self._maybe_bootstrap_windows_direct(flags, raw)
             elif raw[0] == 0x00:
                 log.info("[S%d] Recv 0x00 #%d (%d bytes)", self.sid, msg_num, len(raw))
                 if len(raw) >= 20 and (raw[1] & 0x02):
@@ -433,22 +461,24 @@ class DDSession:
         from .handlers_login import bootstrap_initial_login
         await bootstrap_initial_login(self, self.char_name, 0, source="Windows direct")
 
-    def _session_alt_flag(self) -> int:
-        """Win95 announces the alternate session path with bit 6 in its A6 frames."""
-        return 0x40 if self.client_profile == "windows-direct" else 0x00
-
     def _learn_windows_status_ack(self, raw: bytes):
-        """Learn Win95's non-zero sequence baseline from an empty 0xA6 status frame."""
-        if len(raw) < 16:
+        """Learn Win95 ACK state from an empty 0xA6 control frame."""
+        if len(raw) < 18:
             return
-        seq = struct.unpack_from('>I', raw, 8)[0]
-        if seq:
-            self.client_seq = seq
-            self.client_ack = max(self.client_ack, seq + 1)
-            if self.send_seq == 0:
-                self.send_seq = seq
-            log.info("[S%d] Windows status seq baseline=%d, send_seq=%d, ack=%d",
-                     self.sid, seq, self.send_seq, self.client_ack)
+        # Escaped A6 control frames carry flags/window/ack/max after byte 8.
+        # The 0x1F40 seen in early logs is the advertised receive window, not
+        # the client's data sequence baseline.
+        try:
+            flags_word = struct.unpack_from('>H', raw, 8)[0]
+            window = struct.unpack_from('>H', raw, 10)[0]
+            ack = struct.unpack_from('>I', raw, 12)[0]
+            max_payload = struct.unpack_from('>H', raw, 16)[0]
+        except struct.error:
+            return
+        if ack:
+            self.client_seq = ack
+        log.info("[S%d] Windows A6 control: flags=0x%04X window=%d ack=%d max=%d send_seq=%d client_ack=%d",
+                 self.sid, flags_word, window, ack, max_payload, self.send_seq, self.client_ack)
 
     # ----------------------------------------------------------
     # BBS handshake (verbatim from v3)
@@ -554,14 +584,25 @@ class DDSession:
     # ----------------------------------------------------------
     def _build_keepalive_frame(self) -> bytes:
         """Build session ACK-only frame for keepalive."""
+        if self.client_profile == "windows-direct":
+            return self._build_windows_keepalive_frame()
+
         frame = bytearray(20)
         frame[0] = 0x00
-        frame[1] = 0x01 | self._session_alt_flag()
+        frame[1] = 0x01
         struct.pack_into('>I', frame, 8, self.send_seq)
         struct.pack_into('>I', frame, 12, self.client_ack)
         struct.pack_into('>H', frame, 16, 0)
-        checksum = self._session_checksum(frame)
-        struct.pack_into('>H', frame, 2, checksum)
+        self._store_session_checksum(frame)
+        return bytes(frame)
+
+    def _build_windows_keepalive_frame(self) -> bytes:
+        """Build Win95 little-endian ACK-only frame."""
+        frame = bytearray(20)
+        frame[0] = 0x00
+        frame[1] = 0x02
+        struct.pack_into('<I', frame, 12, self.client_ack)
+        self._store_session_checksum(frame)
         return bytes(frame)
 
     async def _keepalive_loop(self):
