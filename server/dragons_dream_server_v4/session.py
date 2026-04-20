@@ -70,6 +70,7 @@ class DDSession:
         return {
             # ── Login flow ──
             0x0035: hl.h_init,
+            0x0309: hl.h_init,  # Win95 INIT: same payload family as Saturn 0x0035.
             0x019E: hl.h_login_request,
             0x01AA: hl.h_update_chardata_reply,
             0x0B6C: hl.h_chardata2_notice,
@@ -347,7 +348,7 @@ class DDSession:
         if len(raw) < 8 or raw[0] != 0xA6:
             return b''
         flags = raw[1]
-        if not (flags & 0x02):
+        if len(raw) <= 18 or not (flags & 0x02):
             log.info("[S%d] 0xA6 status frame (no data), flags=0x%02X", self.sid, flags)
             return b''
 

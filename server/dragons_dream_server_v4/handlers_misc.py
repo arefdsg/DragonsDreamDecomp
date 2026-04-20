@@ -318,7 +318,7 @@ def build_minimal_reply(reply_type: int, session=None) -> bytes:
         MSG_SAKAYA_EXIT_REQUEST: struct.pack('>HHI', 0, 0, 0),
         MSG_SAKAYA_SIT_REQUEST:  struct.pack('>H', 1),  # status=1 reject (old success: 2B)
         MSG_SAKAYA_MEMLIST_REQ:  struct.pack('>H', 1),  # error=1, never count=0 (hangs)
-        MSG_SAKAYA_FIND_REQUEST: struct.pack('>H', 1),
+        MSG_SAKAYA_FIND_RESULT:  struct.pack('>H', 1),
         MSG_SAKAYA_STAND_REQ:    struct.pack('>HH', 0, 0),
         MSG_BTL_CMD_REQUEST:     struct.pack('>H', 1),
         MSG_GIVEUP_REQUEST:      b'\x00' * 16,

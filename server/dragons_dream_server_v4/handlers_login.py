@@ -172,7 +172,7 @@ async def h_login_request(session, msg_type, payload, param1):
         char.last_login = True
         session.db.save_character(char)
 
-    session.login_phase = 2
+    session.login_phase = max(session.login_phase, 2)
 
 
 async def h_update_chardata_reply(session, msg_type, payload, param1):
