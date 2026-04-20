@@ -324,11 +324,11 @@ CASE 3 - inventory (24 bytes per entry):
 0       16    bytes    item_data
 16      8     --       discarded
 ```
-Win95 note: `DRAGON_I_ENG_DBG.EXE` at `004080b3` parses CHARDATA_REPLY type 2
-offset 32 with the same sized-block helper used for the page chunk size, then
-reads U16 equipment slots from offset 36 until that byte length is exhausted.
-Sending a gold value such as 1000 here makes the Win95 client walk past the
-52-byte entry and fault in the 0x02D2 parser.
+Win95 note: `DRAGON_I_ENG_DBG.EXE` at `004080b3` routes CHARDATA_REPLY type 2
+through an item/system-file parser (`00425e98`, then class-mask/save helpers).
+Do not send the Saturn-style character-detail row to Win95; it is interpreted
+as an item record. The Win95 server path should send an empty type 2 page until
+the real item row format is needed.
 
 Multi-page: page_number 1 resets accumulation buffer at 0x20200000.
 When page_number >= total_pages, accumulated data is parsed.

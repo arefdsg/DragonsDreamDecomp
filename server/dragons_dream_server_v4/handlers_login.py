@@ -198,6 +198,9 @@ async def h_update_chardata_reply(session, msg_type, payload, param1):
     log.info("[S%d] UPDATE_CHARDATA_REPLY (login_phase=%d)", session.sid, session.login_phase)
 
     if session.login_phase >= 3:
+        if session.client_profile == "windows-direct":
+            log.info("[S%d] Win95 CHARDATA replay ignored after initial load", session.sid)
+            return
         log.info("[S%d] CHARDATA already sent, sending 0x02F9 only", session.sid)
         await _send_chardata_request(session)
         return
@@ -570,6 +573,19 @@ async def _send_chardata_reply_type2(session):
       32      U32 BE   gold
       36      U16[8]   equipment_slots
     """
+    if session.client_profile == "windows-direct":
+        # Win95 routes type 2 through an item/system-file parser, not the
+        # Saturn-style character-detail layout below. Sending our fabricated
+        # char_detail entry makes it add an invalid item id 0 / quantity 0.
+        header = bytearray(8)
+        header[0] = 2
+        header[1] = 1
+        header[2] = 1
+        header[3] = 0
+        struct.pack_into('>I', header, 4, 0)
+        await session.send_msg(MSG_CHARDATA_REPLY, bytes(header))
+        return
+
     char = session.char
     entry = bytearray(52)
     struct.pack_into('>H', entry, 0, 0)
@@ -581,13 +597,7 @@ async def _send_chardata_reply_type2(session):
         stat_map = [2, 3, 4, 5, 6, 7, 8, 9]
         for i, si in enumerate(stat_map):
             entry[22 + i] = min(char.base_stats[si], 255)
-        if session.client_profile == "windows-direct":
-            # Win95 parses this field as a sized U16 equipment sub-block.
-            # Sending gold here (for example 1000) makes it walk past the
-            # 52-byte entry and later fault in the 0x02D2 parser.
-            struct.pack_into('>I', entry, 32, 16)
-        else:
-            struct.pack_into('>I', entry, 32, char.gold)
+        struct.pack_into('>I', entry, 32, char.gold)
         # Equipment slots at offset 36: 8 x U16 BE (first 8 of 24 equipment values)
         for i in range(8):
             struct.pack_into('>H', entry, 36 + i * 2, char.equipment[i] & 0xFFFF)

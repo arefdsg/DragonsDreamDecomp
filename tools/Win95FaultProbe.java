@@ -12,6 +12,12 @@ import ghidra.program.model.mem.Memory;
 public class Win95FaultProbe extends GhidraScript {
     private static final String FAULT_ADDR = "004080bd";
     private static final String FUNC_ADDR = "004080b3";
+    private static final String[] EXTRA_FUNCS = {
+        "0040d8c2",
+        "0040d8ec",
+        "00425e98",
+        "00425e24"
+    };
 
     @Override
     protected void run() throws Exception {
@@ -45,6 +51,18 @@ public class Win95FaultProbe extends GhidraScript {
             println("CANDIDATE_PROLOGUE null");
             disassemble(addr.subtract(64));
             dumpInstructions(addr.subtract(64), 80);
+        }
+        for (String text : EXTRA_FUNCS) {
+            Address extra = toAddr(text);
+            disassemble(extra);
+            Function f = getFunctionContaining(extra);
+            if (f == null) {
+                f = createFunction(extra, null);
+            }
+            dumpInstructions(extra, 48);
+            if (f != null) {
+                decompile(f);
+            }
         }
     }
 
