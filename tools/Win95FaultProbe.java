@@ -39,6 +39,7 @@ public class Win95FaultProbe extends GhidraScript {
             if (f != null) {
                 decompile(f);
                 dumpReferences(candidate);
+                dumpCallSites(candidate);
             }
         } else {
             println("CANDIDATE_PROLOGUE null");
@@ -52,6 +53,34 @@ public class Win95FaultProbe extends GhidraScript {
         Reference[] refs = getReferencesTo(target);
         for (Reference ref : refs) {
             println(ref.getFromAddress() + " " + ref.getReferenceType());
+        }
+    }
+
+    private void dumpCallSites(Address target) throws Exception {
+        println("CALLS_TO_BYTES " + target);
+        byte[] needle = new byte[] { (byte) 0xe8, 0, 0, 0, 0 };
+        long targetOffset = target.getOffset();
+        Address start = toAddr("00401000");
+        Address end = toAddr("004983ff");
+        Memory mem = currentProgram.getMemory();
+        byte[] buf = new byte[(int)(end.getOffset() - start.getOffset() + 1)];
+        mem.getBytes(start, buf);
+        for (int i = 0; i + 5 <= buf.length; i++) {
+            if (buf[i] != needle[0]) {
+                continue;
+            }
+            int rel = (buf[i + 1] & 0xff) |
+                      ((buf[i + 2] & 0xff) << 8) |
+                      ((buf[i + 3] & 0xff) << 16) |
+                      ((buf[i + 4] & 0xff) << 24);
+            long dest = start.getOffset() + i + 5 + rel;
+            if (dest == targetOffset) {
+                Address call = start.add(i);
+                println(call + " CALL_REL32");
+                Function caller = getFunctionContaining(call);
+                println("  CALLER " + (caller == null ? "null" : caller.getName() + " @ " + caller.getEntryPoint()));
+                dumpInstructions(call.subtract(32), 24);
+            }
         }
     }
 

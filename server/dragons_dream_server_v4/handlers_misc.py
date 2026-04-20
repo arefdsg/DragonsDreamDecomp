@@ -69,8 +69,8 @@ async def h_card(session, msg_type, payload, param1):
 
 
 async def h_card_notice(session, msg_type, payload, param1):
-    """0x0068 CARD_NOTICE -> CARD_REQUEST (0x02DC): reject/skip."""
-    await session.send_msg(MSG_CARD_REQUEST, struct.pack('>H', 1))
+    """0x0068 CARD_NOTICE: client-side card state notification."""
+    log.info("[S%d] CARD_NOTICE (%d bytes), no reply", session.sid, len(payload))
 
 
 # ── Events ──

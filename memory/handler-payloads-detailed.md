@@ -822,6 +822,8 @@ Offset  Size  Type     Field
 0       2     U16 BE   status (→ context+4)
 ```
 If status == 0: clears card area at g_state+0xF44A via 0x0603FBC0.
+Do not send this as a response to client-sent `CARD_NOTICE` (0x0068);
+`0x02DC` is paired with client-sent `CAST_DICE_NOTICE` (0x02DB).
 
 ### CARD_REPLY (0x02DD) — 16+ bytes
 Handler: file 0x4522
