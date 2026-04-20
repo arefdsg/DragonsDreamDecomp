@@ -175,6 +175,7 @@ class DDSession:
             0x02C8: hmi.h_colo_fldent,
             0x02CD: hmi.h_colo_ranking,
             0x02D4: hmi.h_cast_dice,
+            0x0068: hmi.h_card_notice,
             0x02DB: hmi.h_card,
             0x01CF: hmi.h_exec_event,
             0x01AF: hmi.h_teleport_list,

@@ -12,6 +12,15 @@ from .protocol import sjis_pad, build_game_msg
 log = logging.getLogger("DD-Server")
 
 
+def _clean_windows_name(name_bytes: bytes, fallback: bytes) -> bytes:
+    """Win95 login fields are fixed-width but may carry later fields after NUL."""
+    raw = bytes(name_bytes[:16]).split(b'\x00', 1)[0]
+    raw = bytes(b for b in raw if b >= 0x20)
+    if not raw:
+        raw = bytes(fallback[:16]).split(b'\x00', 1)[0] or b"Player"
+    return (raw + b'\x00' * 16)[:16]
+
+
 async def h_init(session, msg_type, payload, param1):
     """
     0x0035 -> ESP_NOTICE (0x01E8): 51 bytes
@@ -24,6 +33,11 @@ async def h_init(session, msg_type, payload, param1):
     if len(payload) >= 62:
         version_str = payload[0:8].rstrip(b'\x00').decode('ascii', errors='replace')
         name_bytes = payload[32:48]  # first 16 bytes of 24-byte name field
+        if session.client_profile == "windows-direct" and msg_type == 0x0309:
+            # Win95 0x0309 is not the Saturn INIT layout even though it serves the
+            # same role. The apparent name slice contains other state fields, and
+            # echoing it back through 0x02D2 can poison client text handling.
+            name_bytes = _clean_windows_name(b'', session.char_name)
         reconnect_flag = struct.unpack('>H', payload[60:62])[0]
         login_mode = struct.unpack('>H', payload[62:64])[0] if len(payload) >= 64 else 0
         proto_ver = struct.unpack('>H', payload[64:66])[0] if len(payload) >= 66 else 0
@@ -139,6 +153,8 @@ async def h_login_request(session, msg_type, payload, param1):
     """
     if len(payload) >= 20:
         name_bytes = payload[4:20]
+        if session.client_profile == "windows-direct":
+            name_bytes = _clean_windows_name(name_bytes, session.char_name)
         session.char_name = name_bytes
         if session.char:
             session.char.char_name = name_bytes
@@ -565,7 +581,13 @@ async def _send_chardata_reply_type2(session):
         stat_map = [2, 3, 4, 5, 6, 7, 8, 9]
         for i, si in enumerate(stat_map):
             entry[22 + i] = min(char.base_stats[si], 255)
-        struct.pack_into('>I', entry, 32, char.gold)
+        if session.client_profile == "windows-direct":
+            # Win95 parses this field as a sized U16 equipment sub-block.
+            # Sending gold here (for example 1000) makes it walk past the
+            # 52-byte entry and later fault in the 0x02D2 parser.
+            struct.pack_into('>I', entry, 32, 16)
+        else:
+            struct.pack_into('>I', entry, 32, char.gold)
         # Equipment slots at offset 36: 8 x U16 BE (first 8 of 24 equipment values)
         for i in range(8):
             struct.pack_into('>H', entry, 36 + i * 2, char.equipment[i] & 0xFFFF)

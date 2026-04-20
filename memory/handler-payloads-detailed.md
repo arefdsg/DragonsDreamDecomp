@@ -317,13 +317,19 @@ CASE 2 - char_detail (52 bytes per entry):
 20      2     U16 BE   experience
 22      8     bytes    stat_bytes[8] (STR,VIT,INT,MND,AGI,DEX,LUK,CHA)
 30      2     --       padding
-32      4     U32 BE   gold/HP
+32      4     U32 BE   Saturn: gold/HP; Win95: equipment_slots byte length
 36      16    U16[8]   equipment_slots
 
 CASE 3 - inventory (24 bytes per entry):
 0       16    bytes    item_data
 16      8     --       discarded
 ```
+Win95 note: `DRAGON_I_ENG_DBG.EXE` at `004080b3` parses CHARDATA_REPLY type 2
+offset 32 with the same sized-block helper used for the page chunk size, then
+reads U16 equipment slots from offset 36 until that byte length is exhausted.
+Sending a gold value such as 1000 here makes the Win95 client walk past the
+52-byte entry and fault in the 0x02D2 parser.
+
 Multi-page: page_number 1 resets accumulation buffer at 0x20200000.
 When page_number >= total_pages, accumulated data is parsed.
 

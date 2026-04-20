@@ -68,6 +68,11 @@ async def h_card(session, msg_type, payload, param1):
     await session.send_msg(MSG_CARD_REQUEST, struct.pack('>H', 0))
 
 
+async def h_card_notice(session, msg_type, payload, param1):
+    """0x0068 CARD_NOTICE -> CARD_REQUEST (0x02DC): reject/skip."""
+    await session.send_msg(MSG_CARD_REQUEST, struct.pack('>H', 1))
+
+
 # ── Events ──
 
 async def h_exec_event(session, msg_type, payload, param1):
