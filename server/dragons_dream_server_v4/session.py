@@ -39,6 +39,7 @@ class DDSession:
         self.connection_id = self.sid & 0xFFFF
         self.send_seq = 0
         self.client_seq = 0
+        self.client_ack = 1
 
         # Character state (loaded from DB during login)
         self.char: Optional[Character] = None
@@ -306,9 +307,9 @@ class DDSession:
         """Build 0x00-type session DATA frame wrapping SCMD data."""
         frame = bytearray(20 + len(scmd_data))
         frame[0] = 0x00
-        frame[1] = 0x03
+        frame[1] = 0x03 | self._session_alt_flag()
         struct.pack_into('>I', frame, 8, self.send_seq)
-        struct.pack_into('>I', frame, 12, self.send_seq + 1)
+        struct.pack_into('>I', frame, 12, self.client_ack)
         struct.pack_into('>H', frame, 16, len(scmd_data))
         frame[20:20 + len(scmd_data)] = scmd_data
         checksum = self._session_checksum(frame)
@@ -342,12 +343,15 @@ class DDSession:
         seq = (read_escaped() << 24) | (read_escaped() << 16) | (read_escaped() << 8) | read_escaped()
         val2 = (read_escaped() << 24) | (read_escaped() << 16) | (read_escaped() << 8) | read_escaped()
         self.client_seq = seq
-        log.info("[S%d] 0xA6 data: seq=%d, val2=0x%08X", self.sid, seq, val2)
         pos += 4
 
         scmd = bytearray()
         while pos < len(raw):
             scmd.append(read_escaped())
+
+        self.client_ack = max(self.client_ack, seq + len(scmd) + 1)
+        log.info("[S%d] 0xA6 data: seq=%d, val2=0x%08X, ack=%d",
+                 self.sid, seq, val2, self.client_ack)
 
         if scmd:
             log.info("[S%d] Extracted SCMD (%d bytes): %s",
@@ -401,6 +405,7 @@ class DDSession:
                         log.info("[S%d] << SCMD 0x%04X (%d bytes)", self.sid, msg_type, len(payload))
                         await self._dispatch(msg_type, payload, param1)
                 elif self.client_profile == "windows-direct":
+                    self._learn_windows_status_ack(raw)
                     await self._maybe_bootstrap_windows_direct(flags, raw)
             elif raw[0] == 0x00:
                 log.info("[S%d] Recv 0x00 #%d (%d bytes)", self.sid, msg_num, len(raw))
@@ -427,6 +432,23 @@ class DDSession:
                   self.sid, full_hexdump(raw, "Windows empty A6"))
         from .handlers_login import bootstrap_initial_login
         await bootstrap_initial_login(self, self.char_name, 0, source="Windows direct")
+
+    def _session_alt_flag(self) -> int:
+        """Win95 announces the alternate session path with bit 6 in its A6 frames."""
+        return 0x40 if self.client_profile == "windows-direct" else 0x00
+
+    def _learn_windows_status_ack(self, raw: bytes):
+        """Learn Win95's non-zero sequence baseline from an empty 0xA6 status frame."""
+        if len(raw) < 16:
+            return
+        seq = struct.unpack_from('>I', raw, 8)[0]
+        if seq:
+            self.client_seq = seq
+            self.client_ack = max(self.client_ack, seq + 1)
+            if self.send_seq == 0:
+                self.send_seq = seq
+            log.info("[S%d] Windows status seq baseline=%d, send_seq=%d, ack=%d",
+                     self.sid, seq, self.send_seq, self.client_ack)
 
     # ----------------------------------------------------------
     # BBS handshake (verbatim from v3)
@@ -534,9 +556,9 @@ class DDSession:
         """Build session ACK-only frame for keepalive."""
         frame = bytearray(20)
         frame[0] = 0x00
-        frame[1] = 0x01
+        frame[1] = 0x01 | self._session_alt_flag()
         struct.pack_into('>I', frame, 8, self.send_seq)
-        struct.pack_into('>I', frame, 12, self.send_seq + 1)
+        struct.pack_into('>I', frame, 12, self.client_ack)
         struct.pack_into('>H', frame, 16, 0)
         checksum = self._session_checksum(frame)
         struct.pack_into('>H', frame, 2, checksum)
