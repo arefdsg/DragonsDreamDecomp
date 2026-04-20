@@ -371,7 +371,7 @@ class DDSession:
         """
         payload = bytearray(256)
         payload[0] = 0x00
-        payload[1] = 0x00
+        payload[1] = self._session_alt_flag()
         struct.pack_into('>H', payload, 8, 0x0008)
         checksum = self._session_checksum(payload)
         struct.pack_into('>H', payload, 2, checksum)
