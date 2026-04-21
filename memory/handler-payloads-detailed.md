@@ -327,8 +327,8 @@ CASE 3 - inventory (24 bytes per entry):
 Win95 note: `DRAGON_I_ENG_DBG.EXE` at `004080b3` routes CHARDATA_REPLY type 2
 through an item/system-file parser (`00425e98`, then class-mask/save helpers).
 Do not send the Saturn-style character-detail row to Win95; it is interpreted
-as an item record. The Win95 server path should send an empty type 2 page until
-the real item row format is needed.
+as an item record. The Win95 server path currently omits type 2/type 3 pages
+until the real item/inventory row formats are needed.
 
 Multi-page: page_number 1 resets accumulation buffer at 0x20200000.
 When page_number >= total_pages, accumulated data is parsed.

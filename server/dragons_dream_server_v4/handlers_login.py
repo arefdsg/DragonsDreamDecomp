@@ -176,6 +176,22 @@ async def h_login_request(session, msg_type, payload, param1):
         session.char.char_class = payload[22] & 0x07  # zone_class field has class
 
     char = session.char
+
+    if session.client_profile == "windows-direct" and session.login_phase >= 3:
+        # Win95 re-sends LOGIN after the first chardata exchange during the zone
+        # transition. Replaying 0x019F here leaves the client re-entering the
+        # 0x019F handler from a stale packet buffer once map notices arrive.
+        if char:
+            char.last_login = True
+            session.db.save_character(char)
+        if session.login_phase >= 4:
+            log.info("[S%d] Win95 late LOGIN ignored after world load", session.sid)
+            return
+        log.info("[S%d] Win95 late LOGIN: sending deferred world data without 0x019F replay",
+                 session.sid)
+        await _send_deferred_world_data(session)
+        return
+
     resp = bytearray(24)
     struct.pack_into('>H', resp, 0, 0)
     struct.pack_into('>H', resp, 2, 1)
@@ -199,7 +215,11 @@ async def h_update_chardata_reply(session, msg_type, payload, param1):
 
     if session.login_phase >= 3:
         if session.client_profile == "windows-direct":
-            log.info("[S%d] Win95 CHARDATA replay ignored after initial load", session.sid)
+            if session.login_phase >= 4:
+                log.info("[S%d] Win95 CHARDATA replay ignored after world load", session.sid)
+                return
+            log.info("[S%d] Win95 late chardata ack: sending deferred world data", session.sid)
+            await _send_deferred_world_data(session)
             return
         log.info("[S%d] CHARDATA already sent, sending 0x02F9 only", session.sid)
         await _send_chardata_request(session)
@@ -208,19 +228,30 @@ async def h_update_chardata_reply(session, msg_type, payload, param1):
     await _send_chardata_request(session)
     await asyncio.sleep(0.05)
     await _send_chardata_reply_type1(session)
-    await asyncio.sleep(0.05)
-    await _send_chardata_reply_type2(session)
-    await asyncio.sleep(0.05)
-    await _send_chardata_reply_type3(session)
+    if session.client_profile != "windows-direct":
+        await asyncio.sleep(0.05)
+        await _send_chardata_reply_type2(session)
+        await asyncio.sleep(0.05)
+        await _send_chardata_reply_type3(session)
     await asyncio.sleep(0.05)
     await _send_information_notice(session)
     session.login_phase = 3
 
-    await asyncio.sleep(0.05)
+    if session.client_profile == "windows-direct":
+        log.info("[S%d] Win95: deferring map/world data until late login ack", session.sid)
+        return
+
+    await _send_deferred_world_data(session)
+
+
+async def _send_deferred_world_data(session):
+    """Send map and in-world character data after login/chardata settles."""
+    delay = 0.35 if session.client_profile == "windows-direct" else 0.05
+    await asyncio.sleep(delay)
     await _send_map_notice(session)
-    await asyncio.sleep(0.05)
+    await asyncio.sleep(delay)
     await _send_knownmap_notice(session)
-    await asyncio.sleep(0.05)
+    await asyncio.sleep(delay)
     await _send_chardata_notice(session)
     session.login_phase = 4
 
