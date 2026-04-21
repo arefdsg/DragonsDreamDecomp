@@ -40,6 +40,7 @@ class DDSession:
         self.send_seq = 0
         self.client_seq = 0
         self.client_ack = 1
+        self.windows_status_ack = 0
 
         # Character state (loaded from DB during login)
         self.char: Optional[Character] = None
@@ -479,6 +480,7 @@ class DDSession:
             return
         if ack:
             self.client_seq = ack
+            self.windows_status_ack = max(self.windows_status_ack, ack)
         log.info("[S%d] Windows A6 control: flags=0x%04X window=%d ack=%d max=%d send_seq=%d client_ack=%d",
                  self.sid, flags_word, window, ack, max_payload, self.send_seq, self.client_ack)
 

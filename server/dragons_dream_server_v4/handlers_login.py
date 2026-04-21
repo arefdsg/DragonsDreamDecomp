@@ -271,6 +271,8 @@ async def _send_deferred_world_data(session):
             log.info("[S%d] Win95: sending MAP_NOTICE before post-transition CHARDATA",
                      session.sid)
             await _send_map_notice(session)
+            await _wait_for_win95_server_ack(session, session.send_seq,
+                                             label="post-transition MAP_NOTICE")
             session._win95_map_notice_sent = True
             sent_win95_map = True
         await asyncio.sleep(delay)
@@ -314,6 +316,23 @@ async def _send_win95_delayed_map_notice(session):
     finally:
         await asyncio.sleep(0.25)
         session._zone_transitioning = previous_transitioning
+
+
+async def _wait_for_win95_server_ack(session, target_seq: int, label: str,
+                                     timeout: float = 32.0):
+    """Wait for Win95 to ACK a server DATA frame before sending dependent state."""
+    start = asyncio.get_running_loop().time()
+    while getattr(session, 'running', False):
+        ack = getattr(session, 'windows_status_ack', 0)
+        if ack >= target_seq:
+            log.info("[S%d] Win95: %s ACKed at %d", session.sid, label, ack)
+            return True
+        if asyncio.get_running_loop().time() - start >= timeout:
+            log.info("[S%d] Win95: timed out waiting for %s ACK (target=%d, last=%d)",
+                     session.sid, label, target_seq, ack)
+            return False
+        await asyncio.sleep(0.1)
+    return False
 
 
 async def h_chardata2_notice(session, msg_type, payload, param1):
