@@ -322,15 +322,13 @@ async def h_logout(session, msg_type, payload, param1):
     zone_id = char.zone_id if char else 1
     if session.client_profile == "windows-direct" and gotolist_count >= 2:
         # After the Win95 no-map world bootstrap, choosing "go to town" sends a
-        # second 0x019A. Rendering even a one-entry GOTOLIST faults in a client
-        # resource lookup, so bypass the menu and run the transition directly.
-        log.info("[S%d] Win95 town request: direct transition without GOTOLIST",
-                 session.sid)
+        # second 0x019A. Rendering GOTOLIST and triggering 0x02EF both fault in
+        # the same client resource lookup, so leave the local town action alone.
+        log.info("[S%d] Win95 town request: no server reply", session.sid)
         if char:
             char.zone_id = 1
             char.map_id = 1
             session.db.save_character(char)
-        await _send_win95_direct_transition(session, dest_id=1, dest_index=4)
         return
 
     destinations = ZONE_CONNECTIONS.get(zone_id, [1])
