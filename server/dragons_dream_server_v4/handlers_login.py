@@ -264,8 +264,19 @@ async def _send_deferred_world_data(session):
             await _send_map_notice(session)
             await asyncio.sleep(delay)
         await _send_knownmap_notice(session)
+        sent_win95_map = False
+        if (session.client_profile == "windows-direct" and
+                getattr(session, '_zone_transition_count', 0) >= 1):
+            await asyncio.sleep(delay)
+            log.info("[S%d] Win95: sending MAP_NOTICE before post-transition CHARDATA",
+                     session.sid)
+            await _send_map_notice(session)
+            session._win95_map_notice_sent = True
+            sent_win95_map = True
         await asyncio.sleep(delay)
         await _send_chardata_notice(session)
+        if session.client_profile == "windows-direct" and not sent_win95_map:
+            _schedule_win95_delayed_map_notice(session)
     finally:
         if pause_keepalive:
             session._zone_transitioning = previous_transitioning
@@ -274,6 +285,35 @@ async def _send_deferred_world_data(session):
     # Register in world
     from .world import world
     world.register_player(session)
+
+
+def _schedule_win95_delayed_map_notice(session):
+    """Send Win95 MAP_NOTICE after the login/world handlers have unwound."""
+    if getattr(session, '_win95_map_notice_sent', False):
+        return
+    task = getattr(session, '_win95_map_notice_task', None)
+    if task and not task.done():
+        return
+    session._win95_map_notice_task = asyncio.create_task(
+        _send_win95_delayed_map_notice(session))
+
+
+async def _send_win95_delayed_map_notice(session):
+    await asyncio.sleep(1.25)
+    if not getattr(session, 'running', False):
+        return
+    previous_transitioning = getattr(session, '_zone_transitioning', False)
+    session._zone_transitioning = True
+    try:
+        log.info("[S%d] Win95: sending delayed MAP_NOTICE after world bootstrap",
+                 session.sid)
+        await _send_map_notice(session)
+        session._win95_map_notice_sent = True
+    except Exception:
+        log.exception("[S%d] Win95 delayed MAP_NOTICE failed", session.sid)
+    finally:
+        await asyncio.sleep(0.25)
+        session._zone_transitioning = previous_transitioning
 
 
 async def h_chardata2_notice(session, msg_type, payload, param1):
