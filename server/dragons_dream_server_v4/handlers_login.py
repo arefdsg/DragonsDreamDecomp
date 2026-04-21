@@ -322,15 +322,20 @@ async def h_logout(session, msg_type, payload, param1):
     zone_id = char.zone_id if char else 1
     if session.client_profile == "windows-direct" and gotolist_count >= 2:
         # After the Win95 no-map world bootstrap, choosing "go to town" sends a
-        # second 0x019A. The full three-entry dungeon list faults in a client
-        # resource/render lookup, so expose only the natural town destination.
-        destinations = [1]
-        log.info("[S%d] Win95 town request: using single town GOTOLIST entry",
+        # second 0x019A. Rendering even a one-entry GOTOLIST faults in a client
+        # resource lookup, so bypass the menu and run the transition directly.
+        log.info("[S%d] Win95 town request: direct transition without GOTOLIST",
                  session.sid)
-    else:
-        destinations = ZONE_CONNECTIONS.get(zone_id, [1])
-        if zone_id not in destinations:
-            destinations = [zone_id] + destinations
+        if char:
+            char.zone_id = 1
+            char.map_id = 1
+            session.db.save_character(char)
+        await _send_win95_direct_transition(session, dest_id=1, dest_index=4)
+        return
+
+    destinations = ZONE_CONNECTIONS.get(zone_id, [1])
+    if zone_id not in destinations:
+        destinations = [zone_id] + destinations
 
     # Track adventure zone for field mode routing
     non_self = [dz for dz in destinations if dz != zone_id]
@@ -369,6 +374,50 @@ async def h_logout(session, msg_type, payload, param1):
     log.info("[S%d] GOTOLIST: %d entries, si=%s (NATURAL), destinations=%s",
              session.sid, entry_count, server_info_list, destinations)
     await session.send_msg(MSG_GOTOLIST_REQUEST, bytes(resp))
+
+
+async def _send_win95_direct_transition(session, dest_id: int, dest_index: int):
+    """Win95-only transition path for post-world town requests without GOTOLIST UI."""
+    transition_count = getattr(session, '_zone_transition_count', 0) + 1
+    session._zone_transition_count = transition_count
+
+    await session.send_msg(MSG_INFORMATION_NOTICE, struct.pack('>HHI', 0, 0, 0))
+    log.info("[S%d] Win95 direct transition: sent 0x019D for dest_id=%d",
+             session.sid, dest_id)
+
+    await session.send_msg(MSG_EXEC_EVENT_NOTICE,
+                           struct.pack('>BBBB', 0x00, dest_index & 0xFF, 0x00, 0x00))
+    log.info("[S%d] Win95 direct transition: sent 0x02EF dest_index=%d (transition #%d)",
+             session.sid, dest_index, transition_count)
+
+    session._zone_transitioning = True
+    wait_time = 4.0 if transition_count == 1 else 2.0
+    await asyncio.sleep(wait_time)
+
+    await session._send_session_establishment()
+    await asyncio.sleep(0.5)
+    session._zone_transitioning = False
+
+    esp = bytearray(51)
+    struct.pack_into('>H', esp, 0, 0)
+    struct.pack_into('>H', esp, 2, session.session_param)
+    struct.pack_into('>H', esp, 4, session.connection_id)
+    esp[6] = 6
+    struct.pack_into('>I', esp, 8, 1)
+    esp[12:28] = sjis_pad("DD Revival", 16)
+    await session.send_msg(MSG_ESP_NOTICE, bytes(esp))
+
+    char_id = session.char.char_id if session.char else 1
+    update_pay = bytearray(24)
+    struct.pack_into('>H', update_pay, 0, 0)
+    struct.pack_into('>H', update_pay, 2, 1)
+    struct.pack_into('>I', update_pay, 4, char_id)
+    update_pay[8:24] = session.char_name[:16]
+    await session.send_msg(MSG_UPDATE_CHARDATA_REQ, bytes(update_pay))
+    session.login_phase = 3
+
+    log.info("[S%d] Win95 direct transition #%d complete (ESP+UPDATE sent)",
+             session.sid, transition_count)
 
 
 async def h_gotolist_notice(session, msg_type, payload, param1):
