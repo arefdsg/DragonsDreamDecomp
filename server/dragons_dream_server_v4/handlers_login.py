@@ -247,12 +247,28 @@ async def h_update_chardata_reply(session, msg_type, payload, param1):
 async def _send_deferred_world_data(session):
     """Send map and in-world character data after login/chardata settles."""
     delay = 0.35 if session.client_profile == "windows-direct" else 0.05
-    await asyncio.sleep(delay)
-    await _send_map_notice(session)
-    await asyncio.sleep(delay)
-    await _send_knownmap_notice(session)
-    await asyncio.sleep(delay)
-    await _send_chardata_notice(session)
+    pause_keepalive = session.client_profile == "windows-direct"
+    previous_transitioning = getattr(session, '_zone_transitioning', False)
+    if pause_keepalive:
+        session._zone_transitioning = True
+    try:
+        await asyncio.sleep(delay)
+        if session.client_profile == "windows-direct":
+            # Win95 reaches world bootstrap with KNOWNMAP/CHARDATA, but every
+            # tested MAP_NOTICE variant still faults in the 0x01DE handler while
+            # dereferencing the packet payload pointer. Skip it until we identify
+            # the Win95 transport lifetime issue behind that stale pointer.
+            log.info("[S%d] Win95: skipping MAP_NOTICE during world bootstrap",
+                     session.sid)
+        else:
+            await _send_map_notice(session)
+            await asyncio.sleep(delay)
+        await _send_knownmap_notice(session)
+        await asyncio.sleep(delay)
+        await _send_chardata_notice(session)
+    finally:
+        if pause_keepalive:
+            session._zone_transitioning = previous_transitioning
     session.login_phase = 4
 
     # Register in world
@@ -304,9 +320,17 @@ async def h_logout(session, msg_type, payload, param1):
 
     char = session.char
     zone_id = char.zone_id if char else 1
-    destinations = ZONE_CONNECTIONS.get(zone_id, [1])
-    if zone_id not in destinations:
-        destinations = [zone_id] + destinations
+    if session.client_profile == "windows-direct" and gotolist_count >= 2:
+        # After the Win95 no-map world bootstrap, choosing "go to town" sends a
+        # second 0x019A. The full three-entry dungeon list faults in a client
+        # resource/render lookup, so expose only the natural town destination.
+        destinations = [1]
+        log.info("[S%d] Win95 town request: using single town GOTOLIST entry",
+                 session.sid)
+    else:
+        destinations = ZONE_CONNECTIONS.get(zone_id, [1])
+        if zone_id not in destinations:
+            destinations = [zone_id] + destinations
 
     # Track adventure zone for field mode routing
     non_self = [dz for dz in destinations if dz != zone_id]
@@ -693,6 +717,15 @@ async def _send_map_notice(session, width=48, rows=48):
     zone = ZONES.get(char.zone_id if char else 1)
     if zone:
         width, rows = zone.width, zone.height
+
+    if session.client_profile == "windows-direct":
+        # Win95 faults when the first post-login MAP_NOTICE is the full 48x48
+        # payload and another session frame follows it. Send a small bootstrap
+        # slice first; the handler zero-fills its fixed 0x120-byte map buffer
+        # before copying rows, so omitted rows remain safely blocked/unknown.
+        rows = min(rows, 16)
+        log.info("[S%d] Win95 MAP_NOTICE bootstrap: width=%d rows=%d",
+                 session.sid, width, rows)
 
     row_bytes = (width + 7) // 8
     total_data = row_bytes * rows
