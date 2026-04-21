@@ -381,14 +381,14 @@ async def _send_win95_direct_transition(session, dest_id: int, dest_index: int):
     transition_count = getattr(session, '_zone_transition_count', 0) + 1
     session._zone_transition_count = transition_count
 
-    await session.send_msg(MSG_INFORMATION_NOTICE, struct.pack('>HHI', 0, 0, 0))
-    log.info("[S%d] Win95 direct transition: sent 0x019D for dest_id=%d",
-             session.sid, dest_id)
-
+    # Do not complete the post-world 0x019A with INFORMATION_NOTICE here.
+    # Win95 appears to run the local town/menu state machine on that paired
+    # completion and faults in a resource-table lookup before the transition can
+    # settle. Trigger the transition event directly instead.
     await session.send_msg(MSG_EXEC_EVENT_NOTICE,
                            struct.pack('>BBBB', 0x00, dest_index & 0xFF, 0x00, 0x00))
-    log.info("[S%d] Win95 direct transition: sent 0x02EF dest_index=%d (transition #%d)",
-             session.sid, dest_index, transition_count)
+    log.info("[S%d] Win95 direct transition: sent 0x02EF dest_index=%d without 0x019D (dest_id=%d, transition #%d)",
+             session.sid, dest_index, dest_id, transition_count)
 
     session._zone_transitioning = True
     wait_time = 4.0 if transition_count == 1 else 2.0
