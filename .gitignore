@@ -9,4 +9,4 @@ __pycache__/
 logs/
 dragon_win/
 ghidra_12.0.4_PUBLIC/
-win95pagefault.txt
+server/win95pagefault.txt
