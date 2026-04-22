@@ -253,6 +253,18 @@ async def _send_deferred_world_data(session):
         session._zone_transitioning = True
     try:
         await asyncio.sleep(delay)
+        if (session.client_profile == "windows-direct" and
+                getattr(session, '_zone_transition_count', 0) >= 1):
+            # After the first Win95 GOTOLIST/0x02EF transition, both tested
+            # field bootstrap paths are unsafe: CHARDATA without MAP triggers
+            # an immediate local town/map request and MAP itself faults later
+            # in the resource expansion path. Hold the client in the
+            # post-transition menu state while we isolate the required town
+            # handoff message.
+            log.info("[S%d] Win95: holding post-transition world bootstrap",
+                     session.sid)
+            session.login_phase = 4
+            return
         if session.client_profile == "windows-direct":
             # Win95 reaches world bootstrap with KNOWNMAP/CHARDATA, but every
             # tested MAP_NOTICE variant still faults in the 0x01DE handler while
@@ -264,20 +276,9 @@ async def _send_deferred_world_data(session):
             await _send_map_notice(session)
             await asyncio.sleep(delay)
         await _send_knownmap_notice(session)
-        sent_win95_map = False
-        if (session.client_profile == "windows-direct" and
-                getattr(session, '_zone_transition_count', 0) >= 1):
-            await asyncio.sleep(delay)
-            log.info("[S%d] Win95: sending MAP_NOTICE before post-transition CHARDATA",
-                     session.sid)
-            await _send_map_notice(session)
-            await _wait_for_win95_server_ack(session, session.send_seq,
-                                             label="post-transition MAP_NOTICE")
-            session._win95_map_notice_sent = True
-            sent_win95_map = True
         await asyncio.sleep(delay)
         await _send_chardata_notice(session)
-        if session.client_profile == "windows-direct" and not sent_win95_map:
+        if session.client_profile == "windows-direct":
             _schedule_win95_delayed_map_notice(session)
     finally:
         if pause_keepalive:
@@ -537,6 +538,17 @@ async def h_gotolist_notice(session, msg_type, payload, param1):
     await session._send_session_establishment()
     await asyncio.sleep(0.5)
     session._zone_transitioning = False
+
+    if session.client_profile == "windows-direct":
+        # Win95 accepts the re-establish after 0x02EF, but the following
+        # ESP/update pair makes it immediately ACK chardata and enter the same
+        # local town/resource path that faults at 0040d8c6. Isolate whether the
+        # post-transition login replay is the trigger before we try another
+        # town handoff sequence.
+        session.login_phase = 4
+        log.info("[S%d] Win95: post-transition re-establish only; skipping ESP/update replay",
+                 session.sid)
+        return
 
     # Step 4: Send ESP_NOTICE + UPDATE_CHARDATA_REQ
     # CRITICAL: Client NEVER sends 0x0035 after zone transition (connection SM
