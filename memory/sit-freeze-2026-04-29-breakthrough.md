@@ -225,6 +225,50 @@ specific gesture.)
    values. The +0xA5 byte in particular might have a stale "post-confirm" value from the
    most recent zone transition.
 
+### FUN_0602E986 callee resolution (2026-04-29)
+
+All function pointers resolved — NONE are SBL functions. All are DD game code:
+
+| Pointer | Target | Region |
+|---|---|---|
+| PTR_FUN_0602ea4c | 0x0603FF94 | timers.c neighborhood (+0x2FF94) — buffer init? |
+| PTR_FUN_0602ea54 | 0x0604008C | timers.c neighborhood — format function (local_44=0x40F00000) |
+| PTR_FUN_0602ea58 | 0x0603FF08 | timers.c neighborhood — result fetch |
+| PTR_FUN_0602eb0c | 0x0601CA7C | dialog UI (in 0x0601C dialog handler region) |
+| PTR_FUN_0602eb10 | 0x0601CAD6 | dialog UI |
+| PTR_FUN_0602eb14 | 0x0601CB58 | dialog UI |
+| PTR_FUN_0602eb18 | 0x0601CC42 | dialog UI |
+| PTR_FUN_0602eb1c | 0x0601C2CE | sprite placement (in for-loop) |
+| PTR_FUN_0602eb24 | 0x06025D02 | scmd-region finalize |
+| PTR_FUN_0602ec60 | 0x06025D02 | scmd-region (same as eb24, sub-struct init) |
+| PTR_FUN_0602ec78 | 0x06025E38 | scmd-region final |
+
+The 0x0601CA7C-0x0601CC42 functions live in the same code region as the input-flag
+write sites (per `_input_gate.txt` — 0x0601B7-0x0601C2 range). They're the dialog
+rendering primitives. Nothing visibly SBL-dependent.
+
+The dialog-render call chain looks deterministic — nothing should fail in our setup.
+This pushes the freeze hypothesis toward:
+
+a) **Z-priority / clipping**: dialog rendered but obscured by table list or off-screen.
+b) **Stale state 2 reentrant**: state went to 2, but advanced and reset state to 0 before
+   dialog rendered. State 0 then locked by gate byte = 1.
+c) **Press-edge consumption**: first C-press triggered sit and consumed press-edge bit;
+   state 2 input_dispatch sees no new press until release+repress.
+
+Theory (b) is interesting: if state 2 enters and advances on the SAME C-press that
+triggered sit (because press-edge bit at 0x06060E78 still has C set when state 2 enters),
+FUN_0602EBDA would skip stages 0-2 (counter advance) but reach input_dispatch IMMEDIATELY
+at frame 4. Wait — counter only goes 0→1→2 over 3 frames; input_dispatch isn't polled
+until frame 4. By then press-edge is cleared.
+
+So theory (b) doesn't explain it either.
+
+Most likely remaining: theory (a) — dialog rendered but invisible due to Z-priority or
+palette misconfiguration in tavern context specifically. To verify would need to
+disassemble 0x0601CA7C and trace what VDP1 commands it issues and whether tavern's VDP1
+state has the necessary configuration.
+
 ### 19 callers of FUN_06030D90 (gate writer)
 
 Need to per-site disassemble each call site to find: which calls pass r4=1 (set), which
