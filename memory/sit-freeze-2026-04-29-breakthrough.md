@@ -307,6 +307,52 @@ match a normal game state read. Either:
 2. The byte at 0x193B IS read from BIOS (which would be a fixed value at runtime)
 3. The 16-bit literal 0x1874 is not actually what's in r4 at the JSR (possible decoder bug)
 
+### 2026-04-29 (FINAL) — char-data writers traced
+
+User asked about server-pushing corrected character data via 0x02D2 TYPE 2 to update BRAM.
+The mechanism IS in place — server already sends:
+- 0x02F9 (172 bytes, full extended char data with 19 base_stats + 19 current_stats + appearance + skill_levels)
+- 0x02D2 TYPE 1 (char_list)
+- 0x02D2 TYPE 2 (char_detail) — TRIGGERS BRAM SAVE
+- 0x02D2 TYPE 3 (inventory)
+
+**Client-side 0x02D2 TYPE 2 handler chain** (handler_02D2.c, mem 0x06013858):
+1. For each entry: call `FUN_06013B70` = `FUN_060246C4` (per-entry storage)
+2. Call `FUN_06013B74` = `FUN_06024622` (reinit_handler_table)
+3. Call `FUN_06013B78` = `FUN_0601A3B0` (helper)
+4. Call `FUN_06013B7C` = `FUN_0601A328` (helper)
+5. Print "saving systemfile..."
+6. **Call `FUN_06013B88` = `FUN_0603AD2C`** ← BRAM SAVE function
+
+**Important discovery**: `FUN_060246C4` (per-entry storage) actually looks like
+**INVENTORY/EQUIPMENT array management**, not character-stat storage:
+- Manages 0x16-byte (22-byte) entries
+- Field at +0x15 is "count" / quantity (overflow check at 100, underflow at 0)
+- Calls FUN_06024F1E when count == 0 (slot empty)
+- Stores in array at `ctx + DAT_06024776 + DAT_06024772` (some equipment buffer)
+
+So 0x02D2 TYPE 2 is **probably equipment-list / item slots, NOT character stats** —
+the existing handler-payloads-detailed.md documentation is misleading. Character STATS
+come from 0x02F9 (172-byte extended).
+
+**Implication for the gate byte fix**: Even if our server pushes "correct" character
+data via these messages, we don't yet know which field maps to the gate byte at
+`0x202E02CB`. Static tracing would require following:
+- Each field write in FUN_060246C4 (~24 store sites) to see what they touch
+- The character struct array at `g_state + 0x1BE0` (164 bytes per char) — does the
+  gate byte fall in a per-character field?
+- 0x202E02CB is in WRAM-L cache-through (session_ctx + 0x152CB), but character struct
+  is in WRAM-H (g_state + 0x1BE0). Different region — no direct path.
+
+**Conclusion**: path B alone cannot definitively identify which character field
+populates the gate byte without much more tracing. The diagnostic-patch + server-log
+approach (option A) remains the most direct way to find the answer. The patch:
+- bypasses the gate temporarily
+- captures what the post-sit state machine does
+- reveals which fields/messages the production game depended on
+
+Once identified, server-side data fix can be applied and patch reverted.
+
 ### 2026-04-29 LATER — The save file hypothesis
 
 User asked: "could it be that its trying to reference something from our character file save that may not have been created properly and could be missing one or more attributes needed to progress?"
