@@ -307,6 +307,47 @@ match a normal game state read. Either:
 2. The byte at 0x193B IS read from BIOS (which would be a fixed value at runtime)
 3. The 16-bit literal 0x1874 is not actually what's in r4 at the JSR (possible decoder bug)
 
+### 2026-04-29 LATER — The save file hypothesis
+
+User asked: "could it be that its trying to reference something from our character file save that may not have been created properly and could be missing one or more attributes needed to progress?"
+
+**This is a strong lead.** Re-tracing FUN_0602DA04's call to FUN_0602DAA8, I missed that BSR has a delay slot. The actual r4 at the JSR is `r13 + 0x1874` where r13 was loaded with `0x202DE990` at function entry. So:
+
+- r4 = 0x202DE990 + 0x1874 = **0x202E0204** (WRAM-L cache-through, NOT BIOS!)
+- FUN_0602DAA8 reads byte at r4 + 0xC7 = **0x202E02CB**
+- session_ctx is at 0x202CB000, so the gate byte is at session_ctx + 0x152CB
+
+This is the BIG GAME STATE STRUCT region (0x202DE990 has 59 references binary-wide).
+The byte at 0x202E02CB controls FUN_0602DAA8's return:
+- byte == 1 → return 1 (path A: read u16 at +0x46)
+- byte == 2 → call FUN_0602C84A(0x202E0204), return its result (path B)
+- byte == 3 → reset something (after path B)
+- else → return 0 (gate stays set, FREEZE)
+
+**Save file inspection**: DRGNSDRMSYS.BUP (in saves/GS-7114.zip):
+- 554 bytes total, header 0x40, data 490 bytes (0x40-0x22A)
+- Bytes 0x40-0x180: ALL ZEROS (320 bytes empty!)
+- Bytes 0x180+: actual data (player name "12345" placeholder, "199403" date,
+  "C NETRPG" BBS connect, BBS phone number, etc.)
+
+**Per backup-ram-load.md**: SYS BUP loads to "char data area" (~576 bytes / 9 blocks).
+Exact destination not documented but init_defaults_SYS at 0x0603ABB4 calls multiple
+sub-routines (0x0603AB2A, 0x0603AB80, 0x0603ABB0, 0x0603AB94) to set up character
+struct fields. These are THE FUNCTIONS that initialize the gate area — if they're
+called for fresh saves, fresh saves should work. But our save isn't fresh — it has
+the placeholder "12345" data which suggests it was created by an incomplete process.
+
+**Hypothesis**: our save was created without going through proper character creation,
+so character data fields are uninitialized (zero) or incorrectly filled. Specifically,
+the byte that should land at 0x202E02CB in WRAM is 0 in our save, but production
+saves would have it as 1 or 2.
+
+**Testable next steps**:
+1. Create a FRESH character via the game's online registration (if server supports it)
+2. OR compare with another player's working save file (if available)
+3. OR use the targeted binary patch (option B) AND log what state the game accesses
+   next to identify which save field is needed
+
 ### Final 2026-04-29 verdict: server-side path definitively closed
 
 Searched all SCMD handler region (file 0x4000-0x7800) for ANY 32-bit literal in the gate
