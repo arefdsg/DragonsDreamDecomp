@@ -269,6 +269,44 @@ palette misconfiguration in tavern context specifically. To verify would need to
 disassemble 0x0601CA7C and trace what VDP1 commands it issues and whether tavern's VDP1
 state has the necessary configuration.
 
+### 2026-04-29 (later) — 5 CLEAR-gate sites identified, all internal
+
+Comprehensive scan of all 19 callers of FUN_06030D90 (gate writer) found:
+- **10 SET sites** (r4=1, lock the gate)
+- **5 CLEAR sites** (r4=0, release the gate) — listed below
+- 4 other (passthrough or unrecognized)
+
+The 5 CLEAR-gate call sites and their parent functions:
+
+| Call site | Parent function | Gating condition |
+|---|---|---|
+| 0x06031290 | 0x06031204 | calls FUN_0602C0B8 first, then state-byte-driven |
+| 0x06033910 | 0x060337EC | (within FUN_060337EC, deep in code) |
+| 0x06033B4A | 0x060337EC | (same function, second clear path) |
+| 0x06034768 | 0x060346A2 | paired set/clear pattern: SET then condition then maybe CLEAR |
+| 0x06037EE4 | 0x06037B0C | gated on `FUN_0602DA04()` returning -1 or 2 |
+
+**The most relevant for sit (0x06037B0C is called from tavern_state_machine at 0x06034E40)**:
+
+```c
+result = FUN_0602DA04();              // returns counter-stage result
+if (result == -1) goto clear_gate;    // (taken if FUN_0602DAA8 returns -1 path)
+if (result == 1) goto alt_path;        // different cleanup
+if (result == 2) goto clear_gate;     // confirmation path
+goto return;                            // gate stays
+```
+
+`FUN_0602DA04` is a 3-stage state machine using byte at `0x0606740C` (WRAM-H, internal):
+- Stage 0,1: counter advances, returns 0
+- Stage 2+: calls `FUN_0602DAA8(0x1874)` and returns its result
+
+`FUN_0602DAA8(r4)` reads byte at offset `0xC7` from the passed base. For our call (r4=0x1874),
+the effective read address is `0x193B`. **That's in BIOS ROM area** — strange, doesn't pattern
+match a normal game state read. Either:
+1. My addressing interpretation is wrong (mov.b @(R0,Rm),Rn semantics)
+2. The byte at 0x193B IS read from BIOS (which would be a fixed value at runtime)
+3. The 16-bit literal 0x1874 is not actually what's in r4 at the JSR (possible decoder bug)
+
 ### Final 2026-04-29 verdict: server-side path definitively closed
 
 Searched all SCMD handler region (file 0x4000-0x7800) for ANY 32-bit literal in the gate
