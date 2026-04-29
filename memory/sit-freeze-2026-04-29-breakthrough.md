@@ -269,6 +269,27 @@ palette misconfiguration in tavern context specifically. To verify would need to
 disassemble 0x0601CA7C and trace what VDP1 commands it issues and whether tavern's VDP1
 state has the necessary configuration.
 
+### Final 2026-04-29 verdict: server-side path definitively closed
+
+Searched all SCMD handler region (file 0x4000-0x7800) for ANY 32-bit literal in the gate
+struct range 0x06067D40-0x06067D90: **0 hits.** Confirmed:
+- No SCMD handler references the gate byte struct at 0x06067D54.
+- No SCMD handler can write the input-enable flag at 0x0605F428 either (verified earlier).
+- The only paths to clear the gate byte are FUN_06030D90(0) called from internal game logic.
+
+The freeze is entirely in client-local state machine logic with NO protocol gate. The fix
+options remaining, given user constraints (no emulator debug, no binary patches):
+
+- **(A) Accept the gap**: ship server v4 without sit, document limitation.
+- **(B) Binary patch FUN_06030CEC at 0x06030CF4** (the BF instruction): change to skip the
+  gate-byte check unconditionally. Single-byte patch. Tested earlier sit-related patches
+  didn't help (state-259 patch at 0x24E52), but THIS specific patch targets the actual
+  identified gate. Untested.
+- **(C) Re-examine user observation**: maybe there's a button-glyph indicator at screen
+  bottom that user dismisses as "table list UI" but is actually the dialog widget. If
+  dialog renders as small icon rather than popup box, it'd be on-screen but not
+  dialog-shaped.
+
 ### 19 callers of FUN_06030D90 (gate writer)
 
 Need to per-site disassemble each call site to find: which calls pass r4=1 (set), which
