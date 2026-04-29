@@ -128,12 +128,73 @@ The freeze is purely client-local. The fix path requires:
 3. If (3): there's a server-side fix.
 4. If (1)/(2): possibly a hardware/SBL state issue that doesn't have a server fix.
 
+## Continued investigation 2026-04-29 (later in session)
+
+### Gate-byte writer FOUND — `FUN_06030D90`
+
+```c
+void FUN_06030D90(int r4) {
+    byte *gate = 0x06067D58;
+    u16  *flag = 0x06067BC6;
+    if (r4 != 0) {           // SET gate
+        *flag &= ~1;
+        *gate = 1;
+    } else {                  // CLEAR gate
+        *flag |= 1;
+        *gate = 0;
+    }
+}
+```
+
+Referenced as a 32-bit function pointer literal at **19 sites** across 0x060312D0–0x06039E24
+(game logic) and 0x06052CDC (a vtable). Notably called from:
+- **`FUN_06036B6C` state 0** (sit driver): `FUN_06030D90(1)` when transitioning state 0 → state 2.
+  This is INTENTIONAL: lock the table-list UI while sit transition runs.
+
+The gate is set to 1 deliberately. The bug is whatever should call `FUN_06030D90(0)` to release
+it never fires — OR the freeze is downstream of state 2 (in the dialog poll) and we never
+return to state 0 anyway.
+
+### Task SM offsets — both DAT_EC5E and DAT_EA3A resolve to +0xA5
+
+Critical: the byte that FUN_0602E986 sets to 1 (DAT_0602EA3A) is the SAME byte that
+FUN_0602EBDA reads (DAT_0602EC5E) — both resolve to task_sm[+0xA5].
+
+FUN_0602EBDA self-advances over 4 frames:
+1. Frame 1: counter (+0xB0) = 0 < 2 → counter→1, return 0
+2. Frame 2: counter == 1 → call FUN_0602E986 (sets [+0xA5]=1), counter→2, return 0
+3. Frame 3: counter == 2, [+0xA5]==1 → set [+0x26]|=1, [+0x6a]|=1, [+0xA5]=2, return 0
+4. Frame 4+: counter == 2, [+0xA5]==2 → poll input_dispatch() looking for action 2 (C) or 3 (B)
+
+So state 2 of FUN_06036B6C IS reached and IS polling input. My earlier "freeze is in state 0"
+analysis was wrong; the table list staying visible just means the dialog is a modal overlay
+that doesn't fade the underlying UI.
+
+### Open question (needs user observation)
+
+During the freeze: **is a dialog box / Yes-No prompt visible** on screen, or **only the bare
+table list with cursor highlight**? Determines whether we're stuck in:
+- State 2 dialog poll (dialog visible) — input_dispatch not returning 2 for C-press
+- State 0 polling FUN_06030A7E (no dialog) — return value not matching 0x01XX mask
+
+### 19 callers of FUN_06030D90 (gate writer)
+
+Need to per-site disassemble each call site to find: which calls pass r4=1 (set), which
+pass r4=0 (clear). The clearer call site reveals what must trigger to release the gate.
+
+Sites to check (file offsets):
+0x212D0, 0x21CB8, 0x239F0, 0x23C0C, 0x23D10, 0x24820, 0x24998, 0x24E00,
+0x267C0, 0x26BEC, 0x26D00 (FUN_06036B6C state 0), 0x2728C, 0x27F70, 0x285A0,
+0x28700, 0x29754, 0x29A5C, 0x29E24, 0x42CDC (vtable entry).
+
 ## Next session start
 
-1. Disassemble `FUN_06030A7E` (called when gate byte == 0). It's the "do work" branch and may reveal what writes the gate byte to 1 (begin transition) and what's expected to write 0 (end transition).
-2. Search binary for `mov.b R0,@(disp,Rn)` with Rn pointing to struct around 0x06067D54.
-3. Check if any of the 1097 SBL functions match the byte patterns at the known indirect-write sites — that would tell us if SCL_AutoExec or similar is involved.
-4. Once the clearer is identified, trace its trigger backward to find a server-controllable hook.
+1. **First**: ask user about dialog visibility during freeze (state 2 vs state 0 question).
+2. If state 2: trace why input_dispatch returns 0 instead of 2 — could be that button-state
+   variables 0x06060E78 (just-pressed) aren't getting C bit due to some PER_LGetPer interaction.
+3. If state 0: disassemble FUN_06030A7E action-2 path (0x06030B08) common code at 0x06030B2C
+   to see what it returns — verify (& 0x0F00) == 0x0100 holds for action 2.
+4. Either way: per-site analyze 19 callers of FUN_06030D90 to find the clear-gate trigger.
 
 ## Files / artifacts
 
