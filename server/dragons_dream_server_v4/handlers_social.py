@@ -10,6 +10,73 @@ from .protocol import sjis_pad
 log = logging.getLogger("DD-Server")
 
 
+def _build_zone_member_entry(char_id, name, char_class, char_level,
+                              char_race=0, char_gender=0, seat_byte=0,
+                              stats=None):
+    """Build a 128-byte zone member entry for 0x01B6 handler at 0x06015FE6.
+
+    BINARY EVIDENCE (2026-04-20, decompiled table_entry_writer_61FE at 0x060161FE):
+      Per-entry read sequence (NON-SELF path):
+        [0:4]    U32 BE  char_id         (read_data_9FD2)
+        [4:20]   16B     name            (memcpy_16)
+        [20:28]  8B      status_data     (parse_status: [22]=class 0-5, [27]=level 1-16)
+        [28:32]  U32 BE  field_1C        (read_data_9FD2, unused)
+        [32:36]  U32 BE  field_20        (read_data_9FD2, unused)
+        [36:44]  8B      char_info       (read_func_A106: [36]=gender, [38]=race, [39]=class)
+        [44:52]  8B      seat_data       (read_5_skip_3: 5 data + 3 pad → entry+0x8C)
+        [52:90]  38B     equip_a         (read_func_9EE8: 19 × U16 BE → entry+0x66)
+        [90:128] 38B     equip_b         (read_func_9EE8: 19 × U16 BE → entry+0x40)
+
+      CRITICAL: seat_data[0] (entry+0x8C byte 0) must be non-zero for init_seat_grid
+      to count this character as "seated". Without this, ctx[0x1B85]=0 and state 259
+      loops forever → permanent client freeze.
+
+      NOTE: SELF entries (matching ctx[0x0260]) use a different read path in
+      table_entry_writer_61FE. Only send NON-SELF entries (bot characters) to avoid
+      payload format mismatch.
+    """
+    entry = bytearray(128)
+    # [0:4] char_id
+    struct.pack_into('>I', entry, 0, char_id)
+    # [4:20] name (16B null-padded)
+    name_bytes = name[:16] if isinstance(name, bytes) else name.encode('ascii')[:16]
+    entry[4:4 + len(name_bytes)] = name_bytes
+    # [20:28] status_data (parse_status format: byte[2]=class, byte[7]=level)
+    entry[22] = char_class & 0xFF
+    entry[27] = max(1, min(16, char_level)) & 0xFF
+    # [28:36] field_1C, field_20 (zeros)
+    # [36:44] char_info (read_func_A106 format)
+    entry[36] = char_gender & 0xFF   # → entry+0x15
+    entry[38] = char_race & 0xFF     # → bit_decode → entry+0x18 (race bitmask)
+    entry[39] = char_class & 0xFF    # → bit_decode → entry+0x16 (class bitmask)
+    entry[40] = char_level & 0xFF    # → entry+0x19
+    # [44:52] seat_data (5 bytes + 3 pad)
+    entry[44] = seat_byte & 0xFF     # non-zero = seated
+    # [52:90] equip_a (19 × U16 BE)
+    if stats:
+        for i in range(min(19, len(stats))):
+            struct.pack_into('>H', entry, 52 + i * 2, stats[i] & 0xFFFF)
+    # [90:128] equip_b (19 × U16 BE)
+    if stats:
+        for i in range(min(19, len(stats))):
+            struct.pack_into('>H', entry, 90 + i * 2, stats[i] & 0xFFFF)
+    return bytes(entry)
+
+
+async def _send_zone_members(session, entries):
+    """Send ZONE_MEMBERS (0x01B6) with the given 128-byte entries.
+
+    SCMD format: [2B status=0][2B count][4B zone_data=0][N × 128B entries]
+    Handler at 0x06015FE6 populates ctx+0x1BE0 (max 4 entries, stride 0xA4).
+    """
+    count = min(len(entries), 4)  # table has 4 entry slots
+    header = struct.pack('>HHI', 0, count, 0)  # status=0, count, zone_data=0
+    payload = header + b''.join(entries[:count])
+    await session.send_msg(MSG_ZONE_MEMBERS, payload)
+    log.info("[S%d] ZONE_MEMBERS: sent 0x01B6 with %d entries (%dB)",
+             session.sid, count, len(payload))
+
+
 def _build_member_entry(bot):
     """Build a 36-byte member entry for the 0x024D processor at 0x060151D2.
 
@@ -312,6 +379,66 @@ async def h_bb_rmsubdir(session, msg_type, payload, param1):
 
 
 # ── Sakaya (Tavern) ──
+#
+# FREEZE-BISECT EXPERIMENT (2026-04-22)
+#
+# After patching state 259 (ctx[0x1B85] poll) via patches/sit_patch.py, the
+# client still freezes identically after the sit atomic. That rules out state
+# 259 as the actual freeze point. Remaining suspects are one of the three
+# data-push handlers we send alongside 0x020F:
+#
+#   0x0247 — memmove(ctx+0x74EC, payload+16, 40)              bounded
+#   0x024D — clear 8 slots + process_member_entries(count=1)  count-driven
+#   0x01B6 — process_zone_entries(count=N)                    count-driven
+#
+# Set SIT_INCLUDE in order to bisect which message triggers the hang. Leave
+# the list at ("0x020F",) as the first test — if sending ONLY the paired
+# reply and still freezing, the freeze is in the state machine / input path,
+# not in a data-push handler.
+#
+# Test order (each setting, one test, save the log):
+#   1. ("020F",)                                — ack only
+#   2. ("020F", "0247")                         — + self-data
+#   3. ("020F", "0247", "024D")                 — + member push
+#   4. ("020F", "0247", "024D", "01B6")         — full baseline (the hang)
+#
+# First config that hangs identifies the culprit handler.
+SIT_INCLUDE = ("020F", "0247", "024D")  # 0x01B6 removed — disproved premise (see docs)
+
+# GHIDRA INVESTIGATION (2026-04-22, exhaustive scan of 124,874 instructions):
+#
+#   1. ctx[0x1B85] has 6 READS and ZERO WRITES anywhere in the binary — confirmed
+#      by (a) scan of every MOV.W @(disp,PC),Rn followed by MOV.B store,
+#      (b) literal-0x202CCB85 absolute-address search, (c) GBR+8 + offset + ADD
+#      pattern scan. The "state 259 polls ctx[0x1B85]" branch at 0x06034E4E is
+#      structurally dead code — the advance path cannot be triggered by any
+#      server message.
+#
+#   2. 0x0274 is NOT in the client dispatch table at 0x060535D8. Prior theory
+#      that it was a "universal paired ack" was wrong — the client silently drops
+#      it. The ~2.5min recovery + "table full" message seen with _DIAG_SEND_0274
+#      was just the client's paired-wait for 0x020E timing out.
+#
+#   3. init_seat_grid at 0x06035ED8 writes to global 0x06068B6C (resolved via
+#      PTR_DAT_06036008), NOT ctx+0x1B85. So feeding ctx+0x1BE0 via 0x01B6 does
+#      not populate the state-259 gate.
+#
+#   4. All tavern state transitions are driven LOCALLY by UI code
+#      (tavern_full_setup, build_seated_display, enable_transition, etc.) that
+#      writes tavern_ctx[0..1] at 0x06068576. No server message writes there.
+#
+#   Implication: if the client enters state 259 (0x103) on sit, it always
+#   freezes. The real game must avoid state 259 via local UI-driven state
+#   transitions (tavern_ctx[0..1] set to 0x104 before the 258 → transition
+#   enqueues the next state). The server's only job is to (a) ack the 0x020E
+#   paired-wait with 0x020F so the client's RX loop unblocks, and (b) push
+#   table name (0x0247) and member list (0x024D) data in the same frame so the
+#   UI has populated data when it renders.
+#
+# Baseline behavior: atomic send of 0x020F(status=0) + 0x0247 + 0x024D + 0x01B6
+# in that order. 0x020F must come first so its strcpy runs before 0x0247's
+# memmove overwrites ctx+0x74EC with the server table name (otherwise strcpy
+# from an empty ctx+0x7515 would blank the name).
 
 async def h_sakaya_list(session, msg_type, payload, param1):
     """0x020C -> SAKAYA_LIST_REQUEST (0x020D): 8 + N*20 bytes.
@@ -391,8 +518,12 @@ async def h_sakaya_tbllist(session, msg_type, payload, param1):
     for table_id, table_name, bot in TAVERN_TABLES:
         entry = bytearray(64)
         struct.pack_into('>I', entry, 0, table_id)
-        # flags: 1 = occupied (bot sitting), 0 = empty
-        flags = 1 if bot else 0
+        # flags byte (→ slot[45]). Investigation 2026-04-22: all tables flagged
+        # occupied=1 may make auto-assign sit (target=0) think no seat is
+        # available, causing the client's sit UI to block waiting for a free
+        # table — match the permanent post-sit silence we observed. Mark all
+        # tables as EMPTY so the auto-assign path has a seat to take.
+        flags = 0
         struct.pack_into('>H', entry, 4, flags)
         # Display data at [24:64] → slot[4:44]
         table_data = sjis_pad(table_name, 40)
@@ -403,14 +534,30 @@ async def h_sakaya_tbllist(session, msg_type, payload, param1):
     await session.send_msg(MSG_SAKAYA_TBLLIST_REQ, bytes(resp))
     log.info("[S%d] SAKAYA_TBLLIST: sent %d tables: %s",
              session.sid, entry_count, table_names)
+    # Note: prior versions also sent 0x01B6 ZONE_MEMBERS here on the premise
+    # that init_seat_grid would populate ctx[0x1B85] from ctx+0x1BE0. Full-
+    # binary decompile (2026-04-22) confirmed init_seat_grid writes the
+    # global 0x06068B6C, NOT ctx[0x1B85]. That premise was wrong, so the
+    # extra push has been removed to keep the tavern-entry protocol minimal.
 
 
 async def h_sakaya_in(session, msg_type, payload, param1):
     """0x0216 -> SAKAYA_IN_REQUEST (0x0217): 4 bytes.
-    Accept tavern entry.
+    Accept tavern entry. Also sends 0x01B6 (ZONE_MEMBERS) to populate ctx+0x1BE0
+    with bot characters and their seat occupancy — required for sit flow.
+
+    BINARY EVIDENCE (2026-04-20): Handler 0x01B6 at 0x06015FE6 populates ctx+0x1BE0.
+    init_seat_grid reads this table for seat count → ctx[0x1B85]. Without 0x01B6,
+    ctx[0x1B85]=0 and tavern sit state 259 loops forever.
     """
+    from .world import TAVERN_TABLES
+
     log.info("[S%d] SAKAYA_IN (0x0216): %d bytes", session.sid, len(payload))
     await session.send_msg(MSG_SAKAYA_IN_REQUEST, struct.pack('>HH', 0, 0))
+    # Prior versions pushed 0x01B6 ZONE_MEMBERS here to pre-populate ctx+0x1BE0
+    # in the hope of unblocking state-259's ctx[0x1B85] poll. Full decompile
+    # (2026-04-22) disproved the chain — init_seat_grid writes 0x06068B6C
+    # not ctx[0x1B85]. Extra push removed.
 
 
 async def h_sakaya_exit(session, msg_type, payload, param1):
@@ -450,25 +597,19 @@ async def h_sakaya_sit(session, msg_type, payload, param1):
         Does NOT process member entries. Does NOT clear slots.
         Paired reply for 0x024E (find request).
 
-      ROOT CAUSE OF PREVIOUS FREEZE:
-        We were sending 0x024F (find result, 8B max) instead of 0x024D (full refresh).
-        The member list was NEVER populated → tavern UI froze.
+      CORRECTED FLOW (2026-04-13, complete binary analysis):
+        Client sends 0x020E (table_id=0, cmd=8) — table_id=0 = auto-assign.
+        Server replies with 3 messages atomically (send_msgs_atomic):
+        1. 0x020F (4B): status=0 → exits paired wait, strcpy blanks ctx+0x74EC
+        2. 0x0247 (56B): 16B header + 40B table name → restores ctx+0x74EC
+        3. 0x024D (44B): 8B header + 36B entry → populates member list
 
-      CORRECT SEQUENCE (CORRECTED 2026-04-12):
-        When target=0 (client auto-assign), ctx+0x7515 is EMPTY (cleared by client).
-        0x020F handler does strcpy(ctx+0x74EC, ctx+0x7515) when status=0 → BLANKS name.
-        0x0247 handler does memmove(ctx+0x74EC, payload+16, 40) → RESTORES name.
+        All 3 dispatched in one SV_Poll (before UI frame) via SV_RecvFrame loop.
+        After all 3 handlers: ctx+0x74EC=table name, ctx+0x6F88=1, member[0]=bot.
+        UI sees populated data on next frame → advances to seated view.
 
-        If 0x020F is sent LAST (previous approach): 0x0247 sets name, then 0x020F
-        blanks it via strcpy → ctx+0x74EC EMPTY when paired wait exits → freeze.
-
-        FIX: Send 0x020F FIRST. Paired wait exits immediately (name was already empty,
-        strcpy is harmless). Then 0x0247 and 0x024D arrive in the SV receive buffer
-        and are processed by the main loop on the next SV_Poll iterations, populating
-        ctx+0x74EC and ctx+0x6F88/0x6F8C BEFORE the UI draws.
-        1. 0x020F — paired ack FIRST [2B status=0][2B unused=0]
-        2. 0x0247 — table name push [16B hdr][40B name → ctx+0x74EC]
-        3. 0x024D — full member refresh [2B status][2B count][4B ctx][N×36B entries]
+        Adjacent GBR entry 0x024B sender is for REQUESTING delta updates
+        AFTER already seated, NOT for initial sit sequence.
     """
     from .world import TAVERN_TABLES
 
@@ -487,54 +628,77 @@ async def h_sakaya_sit(session, msg_type, payload, param1):
             selected_table = (table_id, table_name, bot)
             break
 
-    if selected_table:
-        table_id, table_name, bot = selected_table
-        session._seated_table = table_id
-        session._seated_bot = bot
-
-        # CRITICAL MESSAGE ORDERING (CORRECTED 2026-04-12):
-        # When target=0, ctx+0x7515 is EMPTY. 0x020F's strcpy blanks ctx+0x74EC.
-        # 0x0247's memmove restores it. So 0x0247 MUST be processed AFTER 0x020F.
-        #
-        # Previous ordering (0x024D→0x0247→0x020F) failed because 0x020F blanks
-        # the name that 0x0247 just wrote.
-        #
-        # FIX: Send 0x020F FIRST. Paired wait exits (strcpy blanks empty→empty).
-        # 0x0247 and 0x024D remain in SV receive buffer, processed by main loop
-        # on next SV_Poll iterations AFTER post-sit code transitions state.
-
-        # Step 1: Send 0x020F paired ack FIRST — exits paired wait immediately
-        # Handler at 0x050D0: strcpy(ctx+0x74EC, ctx+0x7515) when status=0.
-        # ctx+0x7515 is empty (target=0), so this just blanks an already-empty field.
-        await session.send_msg(MSG_SAKAYA_SIT_REQUEST, struct.pack('>HH', 0, 0))
-        log.info("[S%d] SAKAYA_SIT: sent 0x020F ack (4B: status=0) — paired reply FIRST",
-                 session.sid)
-
-        # Step 2: Send 0x0247 table name push — restores ctx+0x74EC
-        # Handler at 0x0533C: memmove(ctx+0x74EC, payload+16, 40). UNCONDITIONAL.
-        # Processed by main loop AFTER paired wait exits → name is set before UI draws.
-        payload_0247 = bytearray(56)
-        table_name_bytes = sjis_pad(table_name, 40)
-        payload_0247[16:56] = table_name_bytes[:40]
-        await session.send_msg(MSG_SAKAYA_SELF_DATA, bytes(payload_0247))
-        log.info("[S%d] SAKAYA_SIT: sent 0x0247 table name (56B: '%s')", session.sid, table_name)
-
-        # Step 3: Send 0x024D full member refresh — populates ctx+0x6F88/0x6F8C
-        # Handler at 0x05152: clears 8 slots, processes entries. UNCONDITIONAL.
-        entry = _build_member_entry(bot)
-        header = struct.pack('>HHI', 0, 1, 0)  # status=0, count=1, context=0
-        await session.send_msg(MSG_SAKAYA_MEMLIST_PUSH, header + entry)
-        log.info("[S%d] SAKAYA_SIT: sent 0x024D member refresh (44B: 1 entry, "
-                 "bot=%s class=%d lv=%d id=%d)",
-                 session.sid,
-                 bot.char_name.rstrip(b'\x00').decode('ascii', errors='replace'),
-                 bot.char_class, bot.char_level, bot.char_id)
-
-        log.info("[S%d] SAKAYA_SIT: ACCEPTED table %d '%s'", session.sid, table_id, table_name)
-    else:
-        # Reject: send 0x020F with status!=0
+    if not selected_table:
         await session.send_msg(MSG_SAKAYA_SIT_REQUEST, struct.pack('>HH', 1, 0))
         log.info("[S%d] SAKAYA_SIT: REJECTED (no bot tables)", session.sid)
+        return
+
+    table_id, table_name, bot = selected_table
+    session._seated_table = table_id
+    session._seated_bot = bot
+
+    # --- 0x020F: paired reply (4B). status=0 → client strcpy commits pending name. ---
+    sit_payload = struct.pack('>HH', 0, 0)
+
+    # --- 0x0247: table name push (56B). Handler memmove(ctx+0x74EC, payload+16, 40). ---
+    tname_header = b'\x00' * 16
+    tname_data = sjis_pad(table_name, 40)
+    self_data_payload = tname_header + tname_data
+
+    # --- 0x024D: full member refresh (8B header + 36B entry). ---
+    member_entry = _build_member_entry(bot)
+    member_payload = struct.pack('>HHI', 0, 1, 0) + member_entry
+
+    # --- 0x01B6: ZONE_MEMBERS (populates ctx+0x1BE0 / init_seat_grid input). ---
+    # Per Ghidra findings this does NOT unblock state 259, but it does populate
+    # the seat grid that build_seated_display renders, so include it.
+    zone_member_msgs = []
+    zone_entries = []
+    for tid, tname, tbot in TAVERN_TABLES:
+        if tbot:
+            zone_entries.append(_build_zone_member_entry(
+                char_id=tbot.char_id,
+                name=tbot.char_name,
+                char_class=tbot.char_class,
+                char_level=tbot.char_level,
+                char_race=tbot.char_race,
+                char_gender=tbot.char_gender,
+                seat_byte=tid,
+                stats=tbot.current_stats,
+            ))
+    if zone_entries:
+        zm_count = min(len(zone_entries), 4)
+        zm_header = struct.pack('>HHI', 0, zm_count, 0)
+        zm_payload = zm_header + b''.join(zone_entries[:zm_count])
+        zone_member_msgs = [(MSG_ZONE_MEMBERS, zm_payload)]
+
+    all_msgs = {
+        "020F": (MSG_SAKAYA_SIT_REQUEST, sit_payload),
+        "0247": (MSG_SAKAYA_SELF_DATA, self_data_payload),
+        "024D": (MSG_SAKAYA_MEMLIST_PUSH, member_payload),
+        "01B6": zone_member_msgs[0] if zone_member_msgs else None,
+    }
+    seq = [all_msgs[k] for k in SIT_INCLUDE if all_msgs.get(k)]
+    await session.send_msgs_atomic(seq)
+    tags = "+".join("0x" + k for k in SIT_INCLUDE if all_msgs.get(k))
+    log.info("[S%d] SAKAYA_SIT: sent ATOMIC %s "
+             "(table=%d '%s', bot=%s class=%d lv=%d id=%d). "
+             "Trace subsequent incoming SCMDs to see what client sends next.",
+             session.sid, tags, table_id, table_name,
+             bot.char_name.rstrip(b'\x00').decode('ascii', errors='replace'),
+             bot.char_class, bot.char_level, bot.char_id)
+
+    # SIT_DIAG: enable post-sit diagnostic logging on this session.
+    # Used in conjunction with patches/sit_diag_gate_patch.py — the client-side
+    # gate at FUN_06030CEC is bypassed, so the state machine progresses past
+    # the table-list lock. From here, the client will send messages that reveal
+    # which character fields/state the production game depended on.
+    # Look for "SIT_DIAG_RX" in the server log to see every post-sit incoming
+    # SCMD with full payload hexdump.
+    session._diag_post_sit = True
+    log.info("[S%d] SIT_DIAG: post-sit logging ENABLED "
+             "(grep 'SIT_DIAG_RX' to see all subsequent client messages)",
+             session.sid)
 
 
 async def h_sakaya_memlist(session, msg_type, payload, param1):

@@ -46,6 +46,12 @@ class DDSession:
         # Zone transition state — pauses keepalives during SV_Init window
         self._zone_transitioning = False
 
+        # Write lock — prevents asyncio coroutine interleaving on self.writer
+        # Evidence: _keepalive_loop and send_msg both call send_iv concurrently.
+        # While asyncio is single-threaded, drain() yields to the event loop,
+        # allowing a second write to start before the first drain completes.
+        self._write_lock = asyncio.Lock()
+
         # Handler dispatch table — built once per session
         self._handlers = self._build_dispatch_table()
 
@@ -200,8 +206,11 @@ class DDSession:
     async def send_iv(self, payload: bytes):
         """Send one IV frame."""
         frame = sv_encode(payload)
-        self.writer.write(frame)
-        await self.writer.drain()
+        log.info("[S%d] >> WIRE TX (%d bytes): %s",
+                 self.sid, len(frame), frame.hex())
+        async with self._write_lock:
+            self.writer.write(frame)
+            await self.writer.drain()
 
     async def send_msg(self, msg_type: int, payload: bytes = b'', param1: int = 0):
         """Build SCMD, wrap in session DATA frame, send as IV."""
@@ -211,6 +220,55 @@ class DDSession:
         log.info("[S%d] >> SEND 0x%04X (%d bytes payload, send_seq=%d)",
                  self.sid, msg_type, len(payload), self.send_seq)
         log.debug("[S%d] >> SCMD:\n%s", self.sid, full_hexdump(scmd, f"SCMD 0x{msg_type:04X}"))
+
+    async def send_msgs_atomic(self, msgs: list):
+        """Send multiple SCMDs atomically in one TCP write.
+
+        Binary analysis of scmd_dispatch_inner (0x0601341C) proves that the
+        dispatch callback processes exactly ONE SCMD per session DATA frame.
+        Concatenating multiple SCMDs into one session frame only dispatches
+        the first — the rest are silently dropped.
+
+        However, SV_RecvFrame (0x060226DA) LOOPS reading all available bytes
+        from the socket buffer, processing each complete IV frame inline via
+        delivery_function (0x060423C8) → queue_dispatch (0x06042A88).
+
+        Therefore: each SCMD gets its own session DATA frame → its own IV
+        frame, but ALL IV frames are written in a single TCP write. This
+        guarantees they're all in the socket buffer when SV_RecvFrame runs,
+        so all SCMDs are dispatched in one SV_Poll before the main loop
+        continues to the UI phase.
+
+        msgs: list of (msg_type, payload) or (msg_type, payload, param1) tuples.
+        """
+        iv_frames = []
+        scmd_parts = []
+        for item in msgs:
+            if len(item) == 2:
+                mt, pl = item
+                p1 = 0
+            else:
+                mt, pl, p1 = item
+            scmd = build_game_msg(mt, pl, p1)
+            scmd_parts.append(scmd)
+            session_frame = self._build_session_data_frame(scmd)
+            iv_frames.append(sv_encode(session_frame))
+
+        # Single TCP write — all IV frames arrive in one socket buffer read
+        combined = b''.join(iv_frames)
+        log.info("[S%d] >> WIRE TX ATOMIC (%d bytes, %d frames): %s",
+                 self.sid, len(combined), len(iv_frames), combined.hex())
+        async with self._write_lock:
+            self.writer.write(combined)
+            await self.writer.drain()
+
+        for i, item in enumerate(msgs):
+            mt = item[0]
+            pl = item[1]
+            log.info("[S%d] >> SEND 0x%04X (%d bytes payload, send_seq=%d, atomic %d/%d)",
+                     self.sid, mt, len(pl), self.send_seq, i + 1, len(msgs))
+            log.debug("[S%d] >> SCMD:\n%s", self.sid,
+                      full_hexdump(scmd_parts[i], f"SCMD 0x{mt:04X}"))
 
     async def recv_iv(self) -> bytes:
         """Receive one complete IV frame. Handles keepalives transparently."""
@@ -522,6 +580,19 @@ class DDSession:
     # ----------------------------------------------------------
     async def _dispatch(self, msg_type: int, payload: bytes, param1: int):
         """Route message to handler."""
+        # SIT_DIAG: when the post-sit diagnostic flag is set (by h_sakaya_sit),
+        # log every incoming SCMD with full payload hexdump. This captures what
+        # the client requests/sends after the gate-bypass patch lets the state
+        # machine progress past sit-state-0. The output is grep-able with the
+        # tag "SIT_DIAG_RX" for post-test analysis.
+        if getattr(self, "_diag_post_sit", False):
+            try:
+                hd = full_hexdump(payload, f"0x{msg_type:04X} (param1=0x{param1:04X})")
+            except Exception:
+                hd = payload[:64].hex()
+            log.info("[S%d] SIT_DIAG_RX 0x%04X param1=0x%04X len=%d\n%s",
+                     self.sid, msg_type, param1, len(payload), hd)
+
         handler = self._handlers.get(msg_type)
         if handler:
             try:
