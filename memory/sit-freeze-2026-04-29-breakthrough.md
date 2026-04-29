@@ -170,12 +170,60 @@ So state 2 of FUN_06036B6C IS reached and IS polling input. My earlier "freeze i
 analysis was wrong; the table list staying visible just means the dialog is a modal overlay
 that doesn't fade the underlying UI.
 
-### Open question (needs user observation)
+### User observation: NO dialog visible during freeze
 
-During the freeze: **is a dialog box / Yes-No prompt visible** on screen, or **only the bare
-table list with cursor highlight**? Determines whether we're stuck in:
-- State 2 dialog poll (dialog visible) — input_dispatch not returning 2 for C-press
-- State 0 polling FUN_06030A7E (no dialog) — return value not matching 0x01XX mask
+User confirmed (2026-04-29): only the bare table list, no dialog box overlay.
+
+This is strange given our analysis says state 0 → state 2 transition SHOULD work:
+- Action-2 path at 0x06030B08 stores `0x0100 + cursor_X` to *0x06067D6E
+- Final return at 0x06030C52 reads u16 from 0x06067D6E
+- Return value 0x0100-0x01XX satisfies state 0 advance check `(v & 0x0F00) == 0x0100`
+- State 0 → state 2: inits task SM, sets gate to 1
+- State 2 polls task SM via FUN_0602EBDA
+- After 3-4 frames, FUN_0602E986 sets up dialog widget (writes button labels, glyphs,
+  enables button widget bits at +0x26 and +0x6a)
+- Subsequent frames poll input_dispatch
+
+We KNOW state 0 advanced to state 2 because:
+- 0x020E was sent (sit_request_sender called) — logs confirm `target=0, cmd=8`
+- (sit_request_sender is called via vtable at 0x060527B0[0]; it would be called as part of
+  the action-2 dispatch chain in production)
+
+**Most likely remaining cause: VDP1/sprite resource issue with FUN_0602E986 dialog widget.**
+
+FUN_0602E986 does heavy graphics setup:
+- PTR_FUN_0602ea4c — likely VDP1 sprite/buffer allocation
+- PTR_FUN_0602ea54 — ditto
+- PTR_FUN_0602ea58 — more allocation
+- FUN_0602e844 — text/label rendering (uses memset, accesses table at DAT_0602e93c+)
+- PTR_FUN_0602eb0c, eb10, eb14, eb18 — VDP1 command setup
+- PTR_FUN_0602eb1c — sprite placement loop (called in for-loop over button count)
+- PTR_FUN_0602eb24 — finalize button widget
+- PTR_FUN_0602ec60 — initialize sub-struct at +0x60
+- PTR_FUN_0602ec68, ec70, ec74, ec78 — more setup
+
+If any of these allocators fails (returns null or bad ptr), the dialog renders into nothing.
+The state machine continues polling input as if visible, but player sees only the table list.
+
+ALTERNATIVELY: the first C-press (which triggered sit_request_sender via the action-2 button
+handler in 0x060527B0 vtable) consumed the just-pressed bit at 0x06060E78. Subsequent C
+presses while held register no NEW press-edge. State 2's input_dispatch returns 0 (no new
+press) every frame.
+
+This last theory is testable: if the player RELEASES C completely and presses again ONCE
+after the freeze starts, does it eventually take effect? (The user has tested with multiple
+button presses and reports no response, so this seems ruled out — but worth confirming the
+specific gesture.)
+
+### What still needs investigation
+
+1. Are the VDP1 sprite allocators in FUN_0602E986 succeeding? Static can show what they write,
+   but not whether they fail in our specific run.
+2. Is the dialog rendering off-screen (Z-priority below table list, palette wrong, etc.)?
+3. Is the task SM struct getting corrupted by overlapping use with zone-transition?
+   FUN_0602E920(0) only inits 3 fields (+0xA7, +0xB0, +0xB4). Many other fields keep stale
+   values. The +0xA5 byte in particular might have a stale "post-confirm" value from the
+   most recent zone transition.
 
 ### 19 callers of FUN_06030D90 (gate writer)
 
