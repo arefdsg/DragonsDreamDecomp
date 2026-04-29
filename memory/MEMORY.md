@@ -4,7 +4,7 @@
 - **Game**: Dragon's Dream — Fujitsu x SEGA Saturn MMORPG (Dec 1997, Japan)
 - **Product**: GS-7114, V1.003, released 1997-10-27, Japan-only
 - **Goal**: Revival server restoring online functionality
-- **Status**: Server v4 — login+tavern entry confirmed on HW. Tavern sit fix pending HW test (corrected payloads + ordering). See [game-flow.md](game-flow.md), [tavern-flow.md](tavern-flow.md)
+- **Status**: Server v4 — login+tavern entry confirmed on HW. Tavern sit **STILL FREEZES** but **gate byte pinpointed 2026-04-29**: `*0x06067D58` must be 0 for state 0 of FUN_06036B6C to advance. **DD uses SBL 2.11**, NOT custom (prior FID conclusion was wrong). See [sit-freeze-2026-04-29-breakthrough.md](sit-freeze-2026-04-29-breakthrough.md) for the actual freeze location, SBL evidence, and 1097 SBL function names extracted. Also: [sit-freeze-2026-04-22-session.md](sit-freeze-2026-04-22-session.md) (what's been ruled out — DO NOT repeat), [sit-freeze-data-driven-conclusions.md](sit-freeze-data-driven-conclusions.md) (input gate analysis — superseded by breakthrough findings).
 
 ## CRITICAL: Handler Dispatch Table (CORRECTED 2026-04-10)
 - **Location**: file 0x435D8, 197 entries, 8 bytes each: **[msg_type:2][pad:2][handler:4]**

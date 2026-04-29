@@ -222,7 +222,9 @@ All three sent in rapid succession (same TCP segment). After paired wait exits:
 | 135633 | 0x020F+0x0247+0x024F | Freeze | 0x024F is FIND RESULT, not member list |
 | 092949 | 0x020F+0x0247+0x024D | Freeze | Correct ordering, but payload formats were WRONG (pre-2026-04-10 corrections) |
 | 140145 | 0x024D+0x0247+0x020F | Freeze | STRCPY BLANKING: 0x020F sent LAST → strcpy(ctx+0x74EC, empty ctx+0x7515) blanked name that 0x0247 just wrote |
-| FIX2 | 0x020F+0x0247+0x024D | PENDING | 0x020F FIRST (corrected payloads), 0x0247 restores name via main loop |
+| FIX2 | 0x020F+0x0247+0x024D | **FAILS on HW** (tested 2026-04-22) | Freeze is downstream of paired-wait clear; not a payload issue |
+| Binary patch @ 0x24E52 (tst→clrt forces state-259 advance) | State 259 bypass | **FAILS on HW** (tested 2026-04-22) | State 259 is not the real freeze point — see [sit-freeze-2026-04-22-session.md](sit-freeze-2026-04-22-session.md) |
+| SIT_INCLUDE bisect (2026-04-22) | Just 0x020F alone, full 4-msg, etc. | All freeze identically | Server response content does not matter; trigger is client-local post-0x020E |
 
 **ROOT CAUSES (THREE ISSUES)**:
 1. Dispatch table format was wrong → sent 0x024F instead of 0x024D (fixed 2026-04-10)
@@ -257,3 +259,31 @@ post-sit state transition, NOT the message payloads. Investigate:
    - Reads controller bitmask from 0x06060E76
    - Button table at 0x06054FCC (7 entries of 6B each)
    - May be relevant if post-sit requires user confirmation
+
+### 2026-04-22 follow-up — all 4 paths walked, results:
+
+- **Path 1**: Both flags (`0x06060F6C`, `0x06060E84`) ARE set during zone entry
+  by `init_zone_transition` (`FUN_06010554`). The main-loop check at
+  `0x0601015A` correctly fires only when `ctx+6 != 0`. Our `0x020F` clears
+  `ctx+6` via the pair table (entry 24: `[0x020E, 0x020F]` — verified),
+  so the timeout never re-fires. **Not the cause of the freeze.**
+- **Path 2**: **CONFIRMED** — `FUN_06036B6C` (sit driver) feeds the task SM
+  struct at `0x060674A8` via `FUN_0602E920` (state 0 setup) and
+  `FUN_0602E962` / `FUN_0602E96E` (state 2 poll/advance). So tavern sit
+  DOES use this SM. Writes found at struct offsets `+0xB0` (byte) and
+  `+0xB4` (u32) in `FUN_0602E974` (setup writes zero+param). Needs live
+  RAM inspection to determine the freeze's exact state.
+- **Path 3**: Sit sender is `FUN_060232DC`. Pool values resolved:
+  target==0 writes `0` to `ctx+0x7515`, sends 0x020E. target!=0 looks up
+  `ctx+0x6DA8` (stride 0x30). Our log confirms `target=0`. No new info.
+- **Path 4**: `check_input` is called twice from `tavern_state_machine`'s
+  epilogue (`0x06034EFA`, `0x06034F04`) only to detect return values 5 or 6,
+  but the button table at `0x06054FCC` contains actions `0x0001-0x0010`
+  (no 5 or 6). So these checks never fire here. **Not the cause.**
+
+**Remaining approach**: live RAM inspection of the task SM struct at
+`0x060674A8` during the freeze (Mednafen debugger or ICE) to identify which
+state field is stuck and what would advance it.
+
+See [sit-freeze-2026-04-22-session.md](sit-freeze-2026-04-22-session.md)
+for full details.
