@@ -147,6 +147,80 @@ For Temple to work via the 0x026F game-world-entry path:
 
 So Mechanism 2 takes the player to whichever zone they're currently in, NOT to Temple. The only way to actually reach Temple as a separate zone is via 0x019C, which is the broken cycle-2+ path.
 
+## Deeper trace findings (2026-05-05 session continued)
+
+### GOTOLIST SM Phase Table (binary verified)
+
+At ROM `0x06054E74`, three 8-byte entries:
+- Phase 0: `0x0601DFB0`, param=`0x13` (19) — main command processing, max 19 batch cycles per call
+- Phase 1: `0x0601E01A`, param=`0x01` (1) — response wait (1 command)
+- Phase 2: `0x0601DDBA`, param=`0x00` — finalize + cleanup
+
+### Phase 0 (FUN_0601DFB0) opening logic
+
+```asm
+0601DFB0: mov.l r14,@-r15
+0601DFB2: mov #0x74,r0
+0601DFB4: sts.l pr,@-r15
+0601DFB6: mov r4,r14
+0601DFB8: mov.b @(R0,r14),r3    ; r3 = byte at struct[+0x74] (active flag)
+0601DFBA: tst r3,r3
+0601DFBC: bt -> 0x0601E014       ; if 0, exit (SM dormant)
+0601DFBE: mov #0,r2
+0601DFC0: mov.w pc+...,r0        ; r0 = some offset
+0601DFC2: mov.l @(R0,r14),r1    ; r1 = u32 at struct[+offset]
+0601DFC4: cmp/hi r2,r1            ; T = (r1 > 0)
+0601DFC6: bf -> 0x0601E00C       ; if r1 == 0, branch to alt path
+0601DFC8: mov.w pc+...,r0        ; r0 = another offset
+0601DFCA: mov.b @(R0,r14),r0    ; r0 = byte (counter? state?)
+0601DFCC: extu.b r0,r0
+0601DFCE: cmp/eq #1,r0
+0601DFD0: bt -> 0x0601E000       ; if state byte == 1, branch
+```
+
+This is a state-byte dispatch. The struct (R14) has a multi-field state machine with at least:
+- byte at +0x74: active flag (bit 0 = SM running)
+- u32 at some offset: seems to be a "timer" or "command count" (cmp/hi vs 0)
+- byte at some offset: state byte (cmp/eq vs 1)
+
+### Phase 2 (FUN_0601DDBA) finalize
+
+```asm
+0601DDBA: mov.l r14,@-r15
+0601DDBC: sts.l pr,@-r15
+0601DDBE: mov r4,r14            ; r14 = struct ptr
+0601DDC0: mov.w pc+...,r0       ; r0 = offset_A
+0601DDC2: mov #0,r4
+0601DDC4: mov.b r4,@(R0,r14)    ; struct[+offset_A] = 0
+0601DDC6: add #-82,r0            ; r0 = offset_A - 82 (= 0x52)
+0601DDC8: mov.b r4,@(R0,r14)    ; struct[+offset_B] = 0
+0601DDCA: mov r14,r3            ; (typo — should be r4 = r14)
+0601DDCC: jsr @r3                ; call function via r3
+```
+
+Phase 2 clears two bytes 82 (0x52) apart in the struct, then jumps to a function pointer. This is the SM's "I'm done" cleanup.
+
+### What I genuinely couldn't determine
+
+After targeted searches:
+1. **No direct writes to ctx[0x1B8C]** found via mov.w/mov.b/mov.l with that offset. ALL accesses to this field are READS (in 3 functions). This strongly suggests the field is set ONCE at boot (probably zero) and never changed thereafter.
+2. **No writes to ctx[0x0260]** either via direct addressing.
+3. **No 32-bit literal references** to absolute addresses 0x202CCB8C or 0x202CB260.
+
+This means the `ctx[0x1B8C] == ctx[0x0260]` comparison in `send_gotolist_notice` likely **always evaluates TRUE** (both are zero), so init flags get cleared on EVERY 0x019C send. That's not a variable we can manipulate.
+
+### What this means for the freeze
+
+The 3-cycle freeze isn't gated on init flags. It's gated on something INSIDE the GOTOLIST SM struct (the byte at +0x74 = active flag, or some other state field). After 3 transitions, that state advances and never resets.
+
+To find the actual cycle counter would require:
+1. Disassembling Phase 0 entirely (0x0601DFB0-0x0601E018)
+2. Disassembling all functions referenced from Phase 0's literal pool
+3. Tracing what happens to the SM struct after each `0x019C` round-trip
+4. Identifying which struct field holds "I've been around the GOTOLIST loop N times"
+
+This is multiple sessions of work without runtime debug.
+
 ## Concrete remaining unknowns
 
 1. **What writes to `ctx[0x1B8C]` and `ctx[0x0260]`?** Without finding the writers, we can't deliberately make them equal/unequal to control init-flag clearing. This might unlock a different code path on cycle 3.
