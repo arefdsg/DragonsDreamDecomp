@@ -89,16 +89,31 @@ async def h_init(session, msg_type, payload, param1):
         char.char_name = db_char_name_was  # restore in-memory to "Hero" for CHARDATA push
         session._char_was_repaired = True
 
-    # Force zone_id=4 on every login. dest_index in h_gotolist_notice is always
-    # 4 (hardcoded), so client always loads zone 4 data. ZONE_CONNECTIONS must
-    # use zone 4's connections [3, 5] for correct GOTOLIST entries.
-    # Evidence (Test 51, dd_server_20260408_173612.log): zone_id=5 persisted
-    # from previous test → ZONE_CONNECTIONS[5]=[4,6] → wrong target_match=6.
-    if char.zone_id != 4:
-        log.info("[S%d] INIT: zone_id=%d → forcing to 4 (dest_index always 4)",
-                 session.sid, char.zone_id)
-        char.zone_id = 4
-        char.map_id = 4
+    # 2026-05-05 NEW APPROACH: Try zone 1 (Starting Town) instead of zone 4
+    # (Cave Dungeon). Rationale:
+    # 1. The Saturn-side dial button literally reads "TO TOWN" — strongly
+    #    suggests the intended destination of the very first online session
+    #    is a TOWN, not a dungeon.
+    # 2. With zone_id=1, ZONE_CONNECTIONS[1]=[2,8] → GOTOLIST destinations
+    #    will be [1 (current), 2 (Plains), 8 (Market Town)].
+    # 3. If we ALSO drive cycle-1 dest_index=1 to match, the loaded zone is
+    #    Starting Town. Then on cycle 2, when user picks ANY destination,
+    #    server_info=current_zone_id=1 entry matches zone_cd_id=1 → client
+    #    sends 0x026F (game world re-entry, no transition) instead of 0x019C.
+    #    This avoids the broken 2nd-zone-transition path entirely.
+    # 4. Zone 1 has shop_ids=[1,3] so there's a tavern + shop infrastructure
+    #    appropriate for "first online destination".
+    #
+    # Per ZONE_PAIR_TEST_MATRIX.md, dest_index=1 was tested in OLDER message
+    # orderings (Tests 16/28/29/30 → BLACK SCREEN). With our current Test 47+
+    # message ordering (0x019D back-to-back with 0x02EF, ESP after re-establish),
+    # this combination has not been tested.
+    target_zone = 1
+    if char.zone_id != target_zone:
+        log.info("[S%d] INIT: zone_id=%d → forcing to %d (Starting Town, 'TO TOWN' destination)",
+                 session.sid, char.zone_id, target_zone)
+        char.zone_id = target_zone
+        char.map_id = target_zone
         db.save_character(char)
 
     session.char = char
@@ -375,7 +390,10 @@ async def h_gotolist_notice(session, msg_type, payload, param1):
                     break
             except ValueError:
                 pass
-    dest_index = dest_index_override if dest_index_override is not None else 4
+    # 2026-05-05: Default dest_index now matches the user's starting zone (1 = Starting Town)
+    # Previously hardcoded to 4 (Cave Dungeon) which forced the user into a dungeon
+    # immediately on login despite the dial button reading "TO TOWN".
+    dest_index = dest_index_override if dest_index_override is not None else 1
     await session.send_msg(MSG_EXEC_EVENT_NOTICE,
                            struct.pack('>BBBB', 0x00, dest_index, 0x00, 0x00))
     log.info("[S%d] GOTOLIST: sent 0x02EF dest_index=%d (user selected dest_id=%d, transition #%d)%s",
