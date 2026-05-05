@@ -288,14 +288,41 @@ async def h_gotolist_notice(session, msg_type, payload, param1):
              session.sid, dest_id,
              session.char.zone_id if session.char else -1)
 
-    # Step 2: Send 0x02EF (EXEC_EVENT_NOTICE) — always dest_index=4
-    # dest_index=4 is the ONLY proven-safe value. CD data is already loaded
-    # from cycle 1. Cycle 2+ reuses same data — no disc read needed.
-    dest_index = 4
+    # Step 2: Send 0x02EF (EXEC_EVENT_NOTICE)
+    #
+    # ZONE_PAIR_TEST MATRIX (2026-05-05): dest_index is now configurable per
+    # test via env var DD_DEST_INDEX_MAP="cycle:value,cycle:value,...". Default
+    # behavior matches the prior hardcoded value (always 4) so production runs
+    # are unchanged.
+    #
+    # Examples:
+    #   DD_DEST_INDEX_MAP="1:4,2:3"    # cycle 1 → dest_index=4, cycle 2 → 3
+    #   DD_DEST_INDEX_MAP="1:4,2:5"    # cycle 1 → dest_index=4, cycle 2 → 5
+    #   DD_DEST_INDEX_MAP="2:dest_id"  # cycle 2 → use the dest_id the user picked
+    #
+    # See ZONE_PAIR_TEST_MATRIX.md for the systematic test plan.
+    import os
+    map_str = os.environ.get('DD_DEST_INDEX_MAP', '').strip()
+    dest_index_override = None
+    if map_str:
+        for entry in map_str.split(','):
+            if ':' not in entry: continue
+            cyc, val = entry.split(':', 1)
+            try:
+                if int(cyc.strip()) == transition_count:
+                    if val.strip() == 'dest_id':
+                        dest_index_override = dest_id
+                    else:
+                        dest_index_override = int(val.strip())
+                    break
+            except ValueError:
+                pass
+    dest_index = dest_index_override if dest_index_override is not None else 4
     await session.send_msg(MSG_EXEC_EVENT_NOTICE,
                            struct.pack('>BBBB', 0x00, dest_index, 0x00, 0x00))
-    log.info("[S%d] GOTOLIST: sent 0x02EF dest_index=%d (user selected dest_id=%d, transition #%d)",
-             session.sid, dest_index, dest_id, transition_count)
+    log.info("[S%d] GOTOLIST: sent 0x02EF dest_index=%d (user selected dest_id=%d, transition #%d)%s",
+             session.sid, dest_index, dest_id, transition_count,
+             " [OVERRIDE via DD_DEST_INDEX_MAP]" if dest_index_override is not None else "")
 
     # Step 3: Wait for CD load then re-establish session
     # Cycle 1: 4.0s for initial CD load. Cycle 2+: 2.0s (data already cached).
