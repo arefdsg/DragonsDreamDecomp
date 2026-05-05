@@ -198,49 +198,37 @@ class AdminGUI:
         tab = ttk.Frame(self.notebook)
         self.notebook.add(tab, text="Zone Test")
 
-        # Preset table — each row is one test from ZONE_PAIR_TEST_MATRIX.md
-        # (test_id, description, env value, expected user actions)
+        # Preset table — only NOVEL tests after auditing prior 50+ test history
+        # in memory/gotolist-flow.md. Most dest_index permutations and
+        # server_info configurations have already been tested.
+        # See ZONE_PAIR_TEST_MATRIX.md for what's already failed.
         self.zone_test_presets = [
-            ("0  (DEFAULT — known broken)",
-             "Cycle 1 = dest 4 (Cave). Cycle 2 = anything. dest_index always 4.",
+            ("0  (DEFAULT current — known FREEZE)",
+             "Cycle 1 dest_index=4 (Cave). Cycle 2 dest_index=4. Server_info=natural.\n"
+             "This matches dd_server_20260505_130249 — documented freeze on cycle 2.",
              "",
-             "Pick any cycle-1 dest (e.g. Cave). Then any cycle-2 dest. Will FREEZE."),
-            ("1a (cycle 2 dest_index=3)",
-             "Cycle 1 dest_index=4. Cycle 2 dest_index=3 (force-load Forest).",
+             "(For baseline) Pick any cycle-1 dest. Then any cycle-2 dest. Will FREEZE."),
+            ("N1 (UNTESTED) cycle 2 dest_index=3",
+             "Cycle 1 dest_index=4. Cycle 2 dest_index=3 (force-load Forest).\n"
+             "dest_index values 1, 4, 5, 6, 7 all tested — value 3 is the only gap.",
              "1:4,2:3",
              "Cycle 1: pick Cave Dungeon (dest_id=4). Cycle 2: pick Forest (dest_id=3)."),
-            ("1b (cycle 2 dest_index = user pick)",
-             "Cycle 1 dest_index=4. Cycle 2 dest_index = whatever the user clicked.",
-             "1:4,2:dest_id",
-             "Cycle 1: pick Cave (dest_id=4). Cycle 2: pick Forest (dest_id=3)."),
-            ("1c (cycle 2 dest_index=5)",
-             "Cycle 1 dest_index=4. Cycle 2 dest_index=5 (force-load Dark Tower).",
+            ("REDUNDANT (1c) cycle 2 dest_index=5",
+             "Already tested in old success log dd_server_20260405_200832.log\n"
+             "Cycle 1=4, cycle 2 dest_index=5 → 'ack then silence' (lines 370-380).",
              "1:4,2:5",
-             "Cycle 1: pick Cave (dest_id=4). Cycle 2: pick Dark Tower (dest_id=5)."),
-            ("1d (cycle 2 dest_index = user pick, Dark Tower)",
-             "Cycle 1 dest_index=4. Cycle 2 dest_index = user's actual selection.",
+             "(SKIP — known to fail. Run only for re-verification baseline.)"),
+            ("REDUNDANT cycle 2 dest_index=user pick",
+             "Equivalent to cycle 2 dest_index=3 or =5 depending on what user clicks.\n"
+             "Both already tested. Adds no new information.",
              "1:4,2:dest_id",
-             "Cycle 1: pick Cave (dest_id=4). Cycle 2: pick Dark Tower (dest_id=5)."),
-            ("1e (cycle 2 same as cycle 1)",
-             "Cycle 1 dest_index=4. Cycle 2 dest_index=4 (same as cycle 1).",
-             "1:4,2:4",
-             "Cycle 1: pick Cave. Cycle 2: pick Cave again. Should match Test 0."),
-            ("2a (cycle 1 dest_index=3, cycle 2=4)",
-             "Cycle 1 dest_index=3 (force-load Forest). Cycle 2 dest_index=4.",
-             "1:3,2:4",
-             "Cycle 1: pick Forest (dest_id=3). Cycle 2: pick Cave (dest_id=4)."),
-            ("2b (cycle 1=3, cycle 2=user pick)",
-             "Cycle 1 dest_index=3. Cycle 2 dest_index = user's actual selection.",
-             "1:3,2:dest_id",
-             "Cycle 1: pick Forest (dest_id=3). Cycle 2: pick any dest from new list."),
-            ("2c (cycle 1=5, cycle 2=4)",
-             "Cycle 1 dest_index=5 (force-load Dark Tower). Cycle 2 dest_index=4.",
-             "1:5,2:4",
-             "Cycle 1: pick Dark Tower (dest_id=5). Cycle 2: pick Cave (dest_id=4)."),
-            ("2d (cycle 1=5, cycle 2=user pick)",
-             "Cycle 1 dest_index=5. Cycle 2 dest_index = user's actual selection.",
-             "1:5,2:dest_id",
-             "Cycle 1: pick Dark Tower (dest_id=5). Cycle 2: pick anything."),
+             "(SKIP — equivalent to N1 or 1c.)"),
+            ("REDUNDANT (Test 41/49) si=[4,4,4]",
+             "Set ALL GOTOLIST entry server_info=4. Already tested in Tests 41, 49,\n"
+             "54, 55 — produces 'post-tavern HANG' (cycle 2 actually advances!).\n"
+             "Requires server code change; not via env var. NEEDS CODE TWEAK.",
+             "",
+             "(SKIP — needs si=[4,4,4] code change to test, not just env var)"),
         ]
         self._zone_test_outcomes = {}  # test_id -> "OK" / "FREEZE" / "OTHER" string
 
