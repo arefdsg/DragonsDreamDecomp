@@ -104,3 +104,9 @@ If all tests fail identically:
 ## Where to log results
 
 Append observations to this file's "Observed" column. After each phase, commit the updated matrix so progress is preserved.
+
+The Admin GUI's "Zone Test" tab automatically appends timestamped outcome lines to this file under the "Outcomes log" section below.
+
+## Outcomes log
+<!-- Auto-appended by admin_gui Zone Test tab -->
+

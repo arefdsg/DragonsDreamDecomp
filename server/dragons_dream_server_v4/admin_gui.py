@@ -19,6 +19,7 @@ import json
 import time
 import logging
 from datetime import datetime
+from pathlib import Path
 
 # ============================================================
 # Resolve paths
@@ -126,6 +127,7 @@ class AdminGUI:
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
         self._build_server_tab()
+        self._build_zone_test_tab()
         self._build_characters_tab()
         self._build_items_tab()
         self._build_monsters_tab()
@@ -188,6 +190,237 @@ class AdminGUI:
                                                         font=("Consolas", 9),
                                                         state=tk.DISABLED, wrap=tk.WORD)
         self.server_output.pack(fill=tk.BOTH, expand=True)
+
+    # ============================================================
+    # TAB: Zone-Pair Test (cycle-2 freeze isolation)
+    # ============================================================
+    def _build_zone_test_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Zone Test")
+
+        # Preset table — each row is one test from ZONE_PAIR_TEST_MATRIX.md
+        # (test_id, description, env value, expected user actions)
+        self.zone_test_presets = [
+            ("0  (DEFAULT — known broken)",
+             "Cycle 1 = dest 4 (Cave). Cycle 2 = anything. dest_index always 4.",
+             "",
+             "Pick any cycle-1 dest (e.g. Cave). Then any cycle-2 dest. Will FREEZE."),
+            ("1a (cycle 2 dest_index=3)",
+             "Cycle 1 dest_index=4. Cycle 2 dest_index=3 (force-load Forest).",
+             "1:4,2:3",
+             "Cycle 1: pick Cave Dungeon (dest_id=4). Cycle 2: pick Forest (dest_id=3)."),
+            ("1b (cycle 2 dest_index = user pick)",
+             "Cycle 1 dest_index=4. Cycle 2 dest_index = whatever the user clicked.",
+             "1:4,2:dest_id",
+             "Cycle 1: pick Cave (dest_id=4). Cycle 2: pick Forest (dest_id=3)."),
+            ("1c (cycle 2 dest_index=5)",
+             "Cycle 1 dest_index=4. Cycle 2 dest_index=5 (force-load Dark Tower).",
+             "1:4,2:5",
+             "Cycle 1: pick Cave (dest_id=4). Cycle 2: pick Dark Tower (dest_id=5)."),
+            ("1d (cycle 2 dest_index = user pick, Dark Tower)",
+             "Cycle 1 dest_index=4. Cycle 2 dest_index = user's actual selection.",
+             "1:4,2:dest_id",
+             "Cycle 1: pick Cave (dest_id=4). Cycle 2: pick Dark Tower (dest_id=5)."),
+            ("1e (cycle 2 same as cycle 1)",
+             "Cycle 1 dest_index=4. Cycle 2 dest_index=4 (same as cycle 1).",
+             "1:4,2:4",
+             "Cycle 1: pick Cave. Cycle 2: pick Cave again. Should match Test 0."),
+            ("2a (cycle 1 dest_index=3, cycle 2=4)",
+             "Cycle 1 dest_index=3 (force-load Forest). Cycle 2 dest_index=4.",
+             "1:3,2:4",
+             "Cycle 1: pick Forest (dest_id=3). Cycle 2: pick Cave (dest_id=4)."),
+            ("2b (cycle 1=3, cycle 2=user pick)",
+             "Cycle 1 dest_index=3. Cycle 2 dest_index = user's actual selection.",
+             "1:3,2:dest_id",
+             "Cycle 1: pick Forest (dest_id=3). Cycle 2: pick any dest from new list."),
+            ("2c (cycle 1=5, cycle 2=4)",
+             "Cycle 1 dest_index=5 (force-load Dark Tower). Cycle 2 dest_index=4.",
+             "1:5,2:4",
+             "Cycle 1: pick Dark Tower (dest_id=5). Cycle 2: pick Cave (dest_id=4)."),
+            ("2d (cycle 1=5, cycle 2=user pick)",
+             "Cycle 1 dest_index=5. Cycle 2 dest_index = user's actual selection.",
+             "1:5,2:dest_id",
+             "Cycle 1: pick Dark Tower (dest_id=5). Cycle 2: pick anything."),
+        ]
+        self._zone_test_outcomes = {}  # test_id -> "OK" / "FREEZE" / "OTHER" string
+
+        # ---- top: instructions ----
+        info = ttk.LabelFrame(tab, text="Cycle-2 Freeze Isolation — Test Matrix")
+        info.pack(fill=tk.X, padx=10, pady=5)
+        ttk.Label(info, justify=tk.LEFT, text=(
+            "Pick a test → click APPLY & START — server starts with the right config.\n"
+            "Then power-cycle Saturn, dial in, and follow the 'User actions' for that test.\n"
+            "After observing outcome, click MARK OK / MARK FREEZE / MARK OTHER.\n"
+            "Outcomes are saved to ZONE_PAIR_TEST_MATRIX.md automatically."
+        )).pack(anchor='w', padx=8, pady=4)
+
+        # ---- middle: test list ----
+        list_frame = ttk.LabelFrame(tab, text="Available tests")
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        cols = ("Test", "DD_DEST_INDEX_MAP", "Outcome")
+        self.zone_test_tree = ttk.Treeview(list_frame, columns=cols,
+                                            show='headings', height=11)
+        self.zone_test_tree.heading("Test", text="Test")
+        self.zone_test_tree.heading("DD_DEST_INDEX_MAP", text="Env override")
+        self.zone_test_tree.heading("Outcome", text="Outcome")
+        self.zone_test_tree.column("Test", width=320)
+        self.zone_test_tree.column("DD_DEST_INDEX_MAP", width=160)
+        self.zone_test_tree.column("Outcome", width=160)
+        self.zone_test_tree.pack(fill=tk.BOTH, expand=True, padx=5, pady=5,
+                                  side=tk.LEFT)
+
+        # Repopulate
+        for tid, desc, env, _actions in self.zone_test_presets:
+            env_disp = env if env else "(unset — default)"
+            self.zone_test_tree.insert("", tk.END,
+                                        values=(tid, env_disp, "—"))
+
+        # On selection, update detail panel
+        self.zone_test_tree.bind('<<TreeviewSelect>>', self._zone_test_on_select)
+
+        # ---- right side: detail panel ----
+        detail = ttk.LabelFrame(tab, text="Selected test")
+        detail.pack(fill=tk.X, padx=10, pady=5)
+
+        self._zone_test_desc_var = tk.StringVar(value="(select a test from the list)")
+        ttk.Label(detail, textvariable=self._zone_test_desc_var,
+                  wraplength=700, justify=tk.LEFT).pack(anchor='w', padx=8, pady=2)
+
+        self._zone_test_actions_var = tk.StringVar(value="")
+        ttk.Label(detail, textvariable=self._zone_test_actions_var,
+                  wraplength=700, justify=tk.LEFT,
+                  font=("Consolas", 9, "bold")).pack(anchor='w', padx=8, pady=2)
+
+        # ---- bottom: action buttons ----
+        btns = ttk.Frame(tab)
+        btns.pack(fill=tk.X, padx=10, pady=8)
+
+        ttk.Button(btns, text="APPLY & START SERVER",
+                    command=self._zone_test_apply_and_start,
+                    width=22).pack(side=tk.LEFT, padx=4)
+
+        ttk.Button(btns, text="STOP SERVER",
+                    command=self._stop_server, width=14).pack(side=tk.LEFT, padx=4)
+
+        ttk.Separator(btns, orient='vertical').pack(side=tk.LEFT, fill='y',
+                                                     padx=8)
+
+        ttk.Button(btns, text="MARK OK", width=12,
+                    command=lambda: self._zone_test_mark("OK")).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btns, text="MARK FREEZE", width=14,
+                    command=lambda: self._zone_test_mark("FREEZE")).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btns, text="MARK OTHER...", width=14,
+                    command=lambda: self._zone_test_mark("OTHER")).pack(side=tk.LEFT, padx=4)
+
+        ttk.Separator(btns, orient='vertical').pack(side=tk.LEFT, fill='y',
+                                                     padx=8)
+
+        ttk.Button(btns, text="OPEN LATEST LOG", width=18,
+                    command=self._zone_test_open_log).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btns, text="OPEN MATRIX FILE", width=18,
+                    command=self._zone_test_open_matrix).pack(side=tk.LEFT, padx=4)
+
+    def _zone_test_on_select(self, event=None):
+        sel = self.zone_test_tree.selection()
+        if not sel:
+            return
+        idx = self.zone_test_tree.index(sel[0])
+        if 0 <= idx < len(self.zone_test_presets):
+            tid, desc, env, actions = self.zone_test_presets[idx]
+            self._zone_test_desc_var.set(desc)
+            self._zone_test_actions_var.set("USER ACTIONS:  " + actions)
+
+    def _zone_test_apply_and_start(self):
+        sel = self.zone_test_tree.selection()
+        if not sel:
+            messagebox.showwarning("Pick a test",
+                                    "Select a test row first.")
+            return
+        idx = self.zone_test_tree.index(sel[0])
+        tid, desc, env, actions = self.zone_test_presets[idx]
+        self._active_zone_test_id = tid
+        self._active_zone_test_env = env
+        self.log_admin(f"ZONE_TEST: applying {tid!r} (DD_DEST_INDEX_MAP={env or 'unset'})")
+        # Stop existing server first if running
+        if self.server_running:
+            self._stop_server()
+            self.root.after(500)
+        # Start with the env var set
+        self._start_server(extra_env={"DD_DEST_INDEX_MAP": env} if env else
+                            {"DD_DEST_INDEX_MAP": ""})
+        messagebox.showinfo("Test active",
+                             f"Test {tid} active.\n\n"
+                             f"DD_DEST_INDEX_MAP={env or '(unset)'}\n\n"
+                             f"USER ACTIONS:\n{actions}\n\n"
+                             "Now power-cycle Saturn and dial in. Then come back here\n"
+                             "and click MARK OK / MARK FREEZE after observing.")
+
+    def _zone_test_mark(self, outcome):
+        sel = self.zone_test_tree.selection()
+        if not sel:
+            messagebox.showwarning("Pick a test", "Select a test row first.")
+            return
+        idx = self.zone_test_tree.index(sel[0])
+        tid = self.zone_test_presets[idx][0]
+        notes = ""
+        if outcome == "OTHER":
+            from tkinter import simpledialog
+            notes = simpledialog.askstring("Outcome notes",
+                                            f"Describe the outcome for test {tid}:") or ""
+            outcome = f"OTHER: {notes}"
+        self._zone_test_outcomes[tid] = outcome
+        # Update tree display
+        vals = list(self.zone_test_tree.item(sel[0], 'values'))
+        vals[2] = outcome
+        self.zone_test_tree.item(sel[0], values=vals)
+        # Append to matrix file
+        self._zone_test_save_outcome(tid, outcome)
+        self.log_admin(f"ZONE_TEST: {tid} → {outcome}")
+
+    def _zone_test_save_outcome(self, tid, outcome):
+        """Append a line to ZONE_PAIR_TEST_MATRIX.md under '## Outcomes log'."""
+        try:
+            from datetime import datetime
+            project_root = Path(SERVER_DIR).parent.parent
+            matrix = project_root / "ZONE_PAIR_TEST_MATRIX.md"
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            line = f"- {ts}  test {tid!r:50}  →  {outcome}\n"
+            with matrix.open("a", encoding="utf-8") as f:
+                # Ensure section header
+                f.seek(0, 2)  # end
+                f.write(line)
+        except Exception as e:
+            self.log_admin(f"ZONE_TEST: failed to write matrix: {e}")
+
+    def _zone_test_open_log(self):
+        # Open the most recent server log file
+        log_dir = Path(SERVER_DIR).parent / "logs"
+        if not log_dir.exists():
+            messagebox.showinfo("No logs", "No logs/ directory found.")
+            return
+        logs = sorted(log_dir.glob("dd_server_*.log"),
+                       key=lambda p: p.stat().st_mtime, reverse=True)
+        if not logs:
+            messagebox.showinfo("No logs", "No dd_server_*.log files found.")
+            return
+        latest = logs[0]
+        try:
+            os.startfile(latest)  # Windows
+        except AttributeError:
+            subprocess.Popen(["xdg-open", str(latest)])
+
+    def _zone_test_open_matrix(self):
+        project_root = Path(SERVER_DIR).parent.parent
+        matrix = project_root / "ZONE_PAIR_TEST_MATRIX.md"
+        if not matrix.exists():
+            messagebox.showinfo("Not found",
+                                 f"ZONE_PAIR_TEST_MATRIX.md not found at:\n{matrix}")
+            return
+        try:
+            os.startfile(matrix)
+        except AttributeError:
+            subprocess.Popen(["xdg-open", str(matrix)])
 
     # ============================================================
     # TAB 2: Characters
@@ -434,7 +667,7 @@ class AdminGUI:
     # ============================================================
     # Server Control Logic
     # ============================================================
-    def _start_server(self):
+    def _start_server(self, extra_env=None):
         if self.server_running:
             return
 
@@ -447,10 +680,20 @@ class AdminGUI:
         cmd = [sys.executable, "-m", "dragons_dream_server_v4",
                "--host", host, "--port", str(port), "--db", db_path]
 
+        # Build env: inherit current, then apply extra_env overrides.
+        # An empty-string value in extra_env explicitly UNSETS that var.
+        env = os.environ.copy()
+        if extra_env:
+            for k, v in extra_env.items():
+                if v == "":
+                    env.pop(k, None)
+                else:
+                    env[k] = v
+
         try:
             self.server_process = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                cwd=SERVER_DIR, text=True, bufsize=1
+                cwd=SERVER_DIR, text=True, bufsize=1, env=env
             )
             self.server_running = True
             self.start_btn.config(state=tk.DISABLED)
