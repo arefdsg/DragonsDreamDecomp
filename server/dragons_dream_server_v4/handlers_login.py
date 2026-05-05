@@ -43,6 +43,52 @@ async def h_init(session, msg_type, payload, param1):
         char = db.load_character(char_id)
     char.reconnect_flag = reconnect_flag
 
+    # AUTO-REPAIR: detect a placeholder character left over from a failed
+    # registration (Saturn-side BRAM write error). If detected, rewrite the
+    # DB row with sensible non-zero defaults so subsequent CHARDATA pushes
+    # to the Saturn (via 0x02F9 + 0x02D2 TYPE 2) populate BRAM correctly.
+    # Evidence: dd_server_20260413_123429.log line 25 created char_id=1
+    # with name='12345' from a corrupt BUP. All subsequent logins
+    # round-trip the same placeholder data without ever repairing it.
+    # See memory/registration-error-root-cause-2026-05-05.md.
+    name_clean = char.char_name.rstrip(b'\x00')
+    is_placeholder = (
+        name_clean == b'12345'
+        or name_clean.startswith(b'\x00')
+        or len(name_clean) == 0
+    )
+    if is_placeholder:
+        log.warning("[S%d] Detected placeholder character name=%r — applying auto-repair (in-memory only; DB row keeps placeholder so Saturn's INIT lookup keeps matching)",
+                    session.sid, name_clean)
+        # IN-MEMORY ONLY: do NOT save the new name back to DB. Saturn's BUP
+        # still has name="12345" so on next dial-in it'll send "12345" in INIT.
+        # If we changed DB to "Hero", load_character_by_name(b"12345") would
+        # return None and create a fresh placeholder character every time.
+        # We just push the GOOD data to Saturn each login via 0x02F9/0x02D2
+        # TYPE 2 — eventually the BUP gets repaired and Saturn starts sending
+        # "Hero" itself.
+        char.char_name = b'Hero' + b'\x00' * 12
+        char.char_class = 1   # Warrior-equivalent
+        char.char_level = 1
+        char.char_race = 1    # Human
+        char.char_gender = 0
+        if char.experience < 100:
+            char.experience = 100
+        char.appearance = bytes([1, 1, 0, 0, 0, 0, 0, 0])
+        if not any(char.skill_slots):
+            char.skill_slots[0] = 1
+        if not any(char.skill_levels):
+            char.skill_levels[0] = 1
+        # Save ONLY the non-name fields back to DB so they persist for next login
+        # without breaking the name-based lookup.
+        # (We do this by saving, then immediately reverting the name in DB.)
+        original_name = b'12345' + b'\x00' * 11
+        db_char_name_was = char.char_name
+        char.char_name = original_name
+        db.save_character(char)
+        char.char_name = db_char_name_was  # restore in-memory to "Hero" for CHARDATA push
+        session._char_was_repaired = True
+
     # Force zone_id=4 on every login. dest_index in h_gotolist_notice is always
     # 4 (hardcoded), so client always loads zone 4 data. ZONE_CONNECTIONS must
     # use zone 4's connections [3, 5] for correct GOTOLIST entries.
@@ -86,26 +132,38 @@ async def h_login_request(session, msg_type, payload, param1):
     0x019E -> UPDATE_CHARDATA_REQUEST (0x019F): 24 bytes
     Client sends login credentials with character name and skill slots.
     """
+    # Don't overwrite server-repaired character data with client placeholders.
+    # If h_init detected and repaired a corrupt-BUP placeholder character,
+    # the client is still sending the old "12345" name — but we want the
+    # server's repaired data to flow back to the Saturn via the CHARDATA
+    # cascade so the BUP gets fixed. Skip the client-name overwrite.
+    repaired = getattr(session, '_char_was_repaired', False)
+
     if len(payload) >= 20:
         name_bytes = payload[4:20]
-        session.char_name = name_bytes
-        if session.char:
-            session.char.char_name = name_bytes
         try:
             name_str = name_bytes.rstrip(b'\x00').decode('shift_jis', errors='replace')
         except Exception:
             name_str = name_bytes.hex()
-        log.info("[S%d] LOGIN: name=%r", session.sid, name_str)
+        if repaired:
+            log.info("[S%d] LOGIN: client sent name=%r — KEEPING repaired server-side name",
+                     session.sid, name_str)
+        else:
+            session.char_name = name_bytes
+            if session.char:
+                session.char.char_name = name_bytes
+            log.info("[S%d] LOGIN: name=%r", session.sid, name_str)
 
-    # Parse skill slots from payload if present (offsets 44-60)
-    if session.char and len(payload) >= 60:
+    # Parse skill slots from payload (only if not repaired — repaired char
+    # has server-set defaults we don't want clobbered by client zeros).
+    if session.char and len(payload) >= 60 and not repaired:
         for i in range(8):
             off = 44 + i * 2
             if off + 2 <= len(payload):
                 session.char.skill_slots[i] = struct.unpack_from('>H', payload, off)[0]
 
-    # Parse class info
-    if session.char and len(payload) >= 23:
+    # Parse class info (skip if repaired)
+    if session.char and len(payload) >= 23 and not repaired:
         session.char.char_class = payload[22] & 0x07  # zone_class field has class
 
     char = session.char
