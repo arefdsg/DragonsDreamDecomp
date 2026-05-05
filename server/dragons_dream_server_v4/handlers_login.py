@@ -398,13 +398,23 @@ async def h_gotolist_notice(session, msg_type, payload, param1):
     # Evidence: Old success (dd_server_20260405_200832.log) sent ESP+UPDATE
     # after re-establish → client resumed GOTOLIST → timeout → 0x026F.
     # Test 48 (dd_server_20260408_154244.log) removed them → permanent black screen.
-    esp = bytearray(51)
+    # 2026-05-05 SMOKING-GUN FIX: ESP_NOTICE handler reads at payload offset
+    # 0xA2 to set ctx[+0xA4]. Our 51-byte payload was too short — handler
+    # was reading garbage past the end. Padding to 180 bytes ensures the
+    # read at 0xA2-0xA5 lands in deterministic zero bytes. This makes
+    # FUN_0601B316's dispatch always take the default branch which writes
+    # 0xFF to g_state[+0x1B6B] — the gate that controls SV_Poll
+    # restoration after each zone transition.
+    # See memory/cycle-freeze-FOUND-WRITER-2026-05-05.md
+    esp = bytearray(180)
     struct.pack_into('>H', esp, 0, 0)
     struct.pack_into('>H', esp, 2, session.session_param)
     struct.pack_into('>H', esp, 4, session.connection_id)
     esp[6] = 6
     struct.pack_into('>I', esp, 8, 1)
     esp[12:28] = sjis_pad("DD Revival", 16)
+    # Bytes 0xA2-0xA5 (162-165) are explicitly zero so ctx[+0xA4] = 0
+    # → dispatch takes default branch → 0xFF written to g_state[+0x1B6B]
     await session.send_msg(MSG_ESP_NOTICE, bytes(esp))
 
     char_id = session.char.char_id if session.char else 1
